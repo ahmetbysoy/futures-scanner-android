@@ -294,26 +294,34 @@ const PROXY_STATE = {
 function buildRestUrls(path){
   const isAndroid = !!(window.Android && Android.signal);
   const urls = [];
-  // Ana Binance (Android'de native interceptor bunu doğrudan cihaz ağından çağırır; CORS/geo-block yok)
-  urls.push(REST + path);
-  urls.push("https://fapi1.binance.com" + path);
-  urls.push("https://fapi2.binance.com" + path);
-  urls.push("https://fapi3.binance.com" + path);
-  urls.push("https://fapi4.binance.com" + path);
-  urls.push("https://api.binance.com" + path);
-  urls.push("https://data-api.binance.vision" + path);
-  if (!isAndroid){
-    // Web sürümü için CORS proxy zinciri (Android'de native interceptor varken gerek yok)
-    const enc = encodeURIComponent(REST + path);
+  const enc = encodeURIComponent(REST + path);
+  if (isAndroid){
+    // Android: native OkHttp interceptor Binance'e direkt gider (CORS/geo-block yok),
+    // önce ana host'u dene, sonra alternatif subdomain'ler.
+    urls.push(REST + path);                              // fapi.binance.com
+    urls.push("https://fapi1.binance.com" + path);
+    urls.push("https://fapi2.binance.com" + path);
+    urls.push("https://fapi3.binance.com" + path);
+    urls.push("https://fapi4.binance.com" + path);
+  } else {
+    // Web tarayıcı: Binance direkt cevaplarında CORS header'ı yok → preflight'sız bile cevap
+    // JS'e ulaşmaz. Bu yüzden ÖNCE CORS proxy'leri dene (proxy sunucu tarafında çağırır,
+    // tarayıcıya CORS header'larıyla döner). Sonda doğrudan denemeleri bırak (eğer kullanıcı
+    // bir şekilde CORS'u açmış bir uzantı kullanıyorsa veya Binance ileride açarsa).
+    //
+    // Not: data-api.binance.vision SPOT aynasıdır (/api/v3), futures (/fapi/*) 404 döner.
+    // api.binance.com da spot'tur, futures cevapları yanlış/sınırlı olur — kullanmıyoruz.
     urls.push(`https://api.allorigins.win/raw?url=${enc}`);
     urls.push(`https://corsproxy.io/?${enc}`);
     urls.push(`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(REST + path)}`);
     urls.push(`https://api.cors.lol/?url=${enc}`);
     urls.push(`https://thingproxy.freeboard.io/fetch/${REST}${path}`);
-    urls.push(`https://cors-anywhere.onrender.com/${REST}${path}`);
+    // Doğrudan denemeler (CORS olmadığı için çoğu tarayıcıda başarısız olur ama hızlıca fail olur)
+    urls.push(REST + path);
+    urls.push("https://fapi1.binance.com" + path);
+    urls.push("https://fapi2.binance.com" + path);
   }
   if (PROXY_STATE.userProxy){
-    const enc = encodeURIComponent(REST + path);
     urls.push(PROXY_STATE.userProxy.replace("${url}", REST + path).replace("${enc}", enc));
   }
   return urls;
@@ -338,7 +346,7 @@ async function restFetch(path){
       const ctl = new AbortController();
       const to = setTimeout(() => ctl.abort(), 6000);
       const r = await fetch(u, { cache:"no-store", signal:ctl.signal,
-        headers:{"X-Requested-With":"FuturesScanner"} });
+        mode:"cors", credentials:"omit" });
       clearTimeout(to);
       // Bazı proxy'ler HTML hata sayfası döndürür (200 OK ama content-type text/html)
       const ct = r.headers.get("content-type") || "";
@@ -367,31 +375,30 @@ async function restFetch(path){
 // WebSocket endpoint listesi (tür bazında)
 function buildWsUrls(kind, streamsOrPath){
   const urls = [];
-  const combined = (base, streams) => `${base}?streams=${streams}`;
+  // ÖNEMLİ: data-stream.binance.vision SPOT aynasıdır (wallet/data-api* grubu).
+  // Futures (fapi/fstream) verisi döndürmez; derinlik/kline iletileri spot formatta (ps/T/pu
+  // alanları yok) gelir, bu da derinlik senkronizasyonunu bozar. Futures için SADECE
+  // fstream.binance.com kullanıyoruz.
   if (kind === "kline"){
     // streamsOrPath = "btcusdt@kline_5m"
-    // 1s kline market/ws üzerinde yok — bu yüzden ilk denemede combined/vision
+    // /market/ws 1m+ kline'lar için resmi yönlendirilmiş endpoint'tir.
     if (streamsOrPath.endsWith("@kline_1s")){
-      urls.push(`wss://fstream.binance.com/stream?streams=${streamsOrPath}`);
-      urls.push(`wss://data-stream.binance.vision/stream?streams=${streamsOrPath}`);
+      // 1s kline: /market/ws desteklemiyor. /ws tekil endpoint'i 1s için çalışıyor (her zaman
+      // olmasa da). Combined /stream bazen timeout veriyor, önce tekil /ws dene.
+      urls.push(`wss://fstream.binance.com/ws/${streamsOrPath}`);
     } else {
       urls.push(`wss://fstream.binance.com/market/ws/${streamsOrPath}`);
       urls.push(`wss://fstream.binance.com/market/stream?streams=${streamsOrPath}`);
-      urls.push(`wss://fstream.binance.com/stream?streams=${streamsOrPath}`);
-      urls.push(`wss://data-stream.binance.vision/stream?streams=${streamsOrPath}`);
+      urls.push(`wss://fstream.binance.com/ws/${streamsOrPath}`);
     }
-    urls.push(`wss://fstream.binance.com/ws/${streamsOrPath}`);
   } else if (kind === "market"){
+    // market: aggTrade + markPrice + forceOrder combined
     urls.push(`wss://fstream.binance.com/market/stream?streams=${streamsOrPath}`);
-    urls.push(`wss://fstream.binance.com/stream?streams=${streamsOrPath}`);
-    urls.push(`wss://data-stream.binance.vision/stream?streams=${streamsOrPath}`);
   } else if (kind === "public"){
-    // streamsOrPath = "btcusdt@depth@100ms"
+    // public (depth): high-frequency yönlendirilmiş endpoint
     urls.push(`wss://fstream.binance.com/public/ws/${streamsOrPath}`);
     urls.push(`wss://fstream.binance.com/public/stream?streams=${streamsOrPath}`);
     urls.push(`wss://fstream.binance.com/ws/${streamsOrPath}`);
-    urls.push(`wss://data-stream.binance.vision/stream?streams=${streamsOrPath}`);
-    urls.push(`wss://data-stream.binance.vision/ws/${streamsOrPath}`);
   }
   return urls;
 }
@@ -448,16 +455,19 @@ function openWsWithFallback(kind, streamsOrPath, stateKey, onOpen, onMessage, on
   tryNext();
   return { close: () => { confirmed = true; if (current) try{current.close();}catch(_){} } };
 }
-// Nisan 2026 migration sonrası routed endpoint'ler.
-// /market: kline (≥1m), aggTrade, markPrice, forceOrder. /public: high-frequency depth.
-// /market/ws sadece ≥1m kline'ları yayınlıyor; 1s kline artık ayrı sürekli-besleme olarak
-// root (/ws) veya combined (/stream) üzerinden gidiyor. AggTrade/markPrice/forceOrder da
-// root /stream combined üzerinde çalışıyor.
+// Futures WS route'ları (fstream.binance.com — futures ağı).
+// NOT: data-stream.binance.vision SPOT aynasıdır, futures için KULLANMA (ps/T/pu alanları
+// eksik gelir, derinlik senkronizasyonu bozulur).
+// /market/ws  : tekil kline stream (≥1m)
+// /market/stream : combined market stream (aggTrade + markPrice + forceOrder)
+// /public/ws  : tekil yüksek-frekanslı derinlik
+// /public/stream : combined derinlik
+// /ws         : root combined/herşey (fallback)
 const WS_MARKET_DIRECT = "wss://fstream.binance.com/market/ws";
 const WS_MARKET_STREAM = "wss://fstream.binance.com/market/stream";
 const WS_PUBLIC_DIRECT = "wss://fstream.binance.com/public/ws";
 const WS_PUBLIC_STREAM = "wss://fstream.binance.com/public/stream";
-const WS_COMBINED = "wss://fstream.binance.com/stream";
+const WS_COMBINED = "wss://fstream.binance.com/ws";
 const WS_VISION = "wss://data-stream.binance.vision/stream";
 const KLINE_FAST_INTERVALS = new Set(["1s"]); // 1s kline /market/ws üzerinde yok
 const TFS = ["1m","5m"];
