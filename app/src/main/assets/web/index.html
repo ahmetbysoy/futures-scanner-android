@@ -292,21 +292,30 @@ const PROXY_STATE = {
 };
 // REST endpoint listesi (fonksiyonlar, çünkü path parametre alır)
 function buildRestUrls(path){
+  const isAndroid = !!(window.Android && Android.signal);
   const urls = [];
+  // Ana Binance (Android'de native interceptor bunu doğrudan cihaz ağından çağırır; CORS/geo-block yok)
   urls.push(REST + path);
   urls.push("https://fapi1.binance.com" + path);
-  // Binance public mirror (spot destekli ama bazı futures endpoint'leri de var)
-  urls.push("https://api.binance.com" + path.replace(/^\/fapi\//,"/api/v3/")); // klines/depth vb. spot karşılıkları (best effort)
-  // Community CORS proxies (her biri Binance'i arkadan çağırır)
-  const enc = encodeURIComponent(REST + path);
-  urls.push(`https://api.allorigins.win/raw?url=${enc}`);
-  urls.push(`https://corsproxy.io/?${enc}`);
-  urls.push(`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(REST + path)}`);
-  urls.push(`https://api.cors.lol/?url=${enc}`);
-  urls.push(`https://thingproxy.freeboard.io/fetch/${REST}${path}`);
-  urls.push(`https://cors-anywhere.onrender.com/${REST}${path}`);
-  // Kullanıcı özel proxy (en son öncelik; tam URL veya path template)
-  if (PROXY_STATE.userProxy) urls.push(PROXY_STATE.userProxy.replace("${url}", REST + path).replace("${enc}", enc));
+  urls.push("https://fapi2.binance.com" + path);
+  urls.push("https://fapi3.binance.com" + path);
+  urls.push("https://fapi4.binance.com" + path);
+  urls.push("https://api.binance.com" + path);
+  urls.push("https://data-api.binance.vision" + path);
+  if (!isAndroid){
+    // Web sürümü için CORS proxy zinciri (Android'de native interceptor varken gerek yok)
+    const enc = encodeURIComponent(REST + path);
+    urls.push(`https://api.allorigins.win/raw?url=${enc}`);
+    urls.push(`https://corsproxy.io/?${enc}`);
+    urls.push(`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(REST + path)}`);
+    urls.push(`https://api.cors.lol/?url=${enc}`);
+    urls.push(`https://thingproxy.freeboard.io/fetch/${REST}${path}`);
+    urls.push(`https://cors-anywhere.onrender.com/${REST}${path}`);
+  }
+  if (PROXY_STATE.userProxy){
+    const enc = encodeURIComponent(REST + path);
+    urls.push(PROXY_STATE.userProxy.replace("${url}", REST + path).replace("${enc}", enc));
+  }
   return urls;
 }
 function isGeoBlock(code, text){
@@ -568,21 +577,6 @@ async function loadSymbols(){
       });
     }
   }catch(e){ console.warn("exchangeInfo hata (fallback liste kullanılıyor):", e); }
-}
-function restFetch(path){
-  const urls = [`${REST}${path}`, `https://data-api.binance.vision${path}`];
-  return (async () => {
-    let lastErr;
-    for (const u of urls){
-      try{
-        const r = await fetch(u, {cache:'no-store'});
-        if (r.ok) return r;
-        if (r.status === 451 || r.status === 403) { lastErr = new Error(`HTTP ${r.status} from ${u}`); continue; }
-        lastErr = new Error(`HTTP ${r.status}`);
-      }catch(e){ lastErr = e; }
-    }
-    throw lastErr || new Error('REST istekleri başarısız');
-  })();
 }
 async function fetchKlines(symbol, interval, limit=600){
   const r = await restFetch(`/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`);
@@ -2854,13 +2848,23 @@ function bindUI(){
   bindUI(); bindSettings(); renderFavs(); updateFavBtn(); renderFlowMini(); renderWsStatus();
   await patternPoolInit();
   patternCompleteAllOpenEvents().catch(()=>{});
-  loadSymbols();                                  // arama için arka planda
+  loadSymbols();                                  // arka planda
   $("symInput").placeholder = S.symbol;
-  await loadKlines();
+  try {
+    await loadKlines();
+  } catch(e) {
+    console.warn("loadKlines ilk denemede başarısız, reconnect ile tekrar denenecek:", e);
+    S.candles = [];
+  }
   initChart(S.symbol);
   redrawAll(); restoreOrFitChart();
   runEngine(); renderSignalTab(); patternRenderSignalContext(null);
   wsConnect(); startRaw();
+  setTimeout(async () => {
+    if (!S.candles || !S.candles.length) {
+      try { await loadKlines(); redrawAll(); restoreOrFitChart(); runEngine(); } catch(_){}
+    }
+  }, 6000);
   patternBackfillSymbol(S.symbol).catch(e => console.warn("pattern backfill hata", e));
 })();
 </script>

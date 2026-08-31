@@ -120,7 +120,15 @@ class MainActivity : ComponentActivity() {
                                         override fun shouldInterceptRequest(
                                             view: WebView?,
                                             request: WebResourceRequest?
-                                        ) = request?.let { assetLoader.shouldInterceptRequest(it.url) }
+                                        ): WebResourceResponse? {
+                                            if (request == null) return null
+                                            // 1) Binance REST'i native OkHttp ile proxy'le (CORS/451/geo-block kalkar)
+                                            if (BinanceProxy.isBinanceRest(request.url.toString())) {
+                                                return BinanceProxy.intercept(request)
+                                            }
+                                            // 2) Lokal asset'ler (WebViewAssetLoader)
+                                            return assetLoader.shouldInterceptRequest(request.url)
+                                        }
 
                                         override fun onReceivedError(
                                             view: WebView?,
