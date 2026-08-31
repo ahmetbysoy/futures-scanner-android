@@ -1,12 +1,15 @@
 package com.predator.futures
 
 import android.annotation.SuppressLint
-import android.app.Activity
 import android.content.pm.ActivityInfo
 import android.os.Bundle
+import android.util.Log
 import android.view.View
 import android.view.WindowManager
+import android.webkit.ConsoleMessage
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
+import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -22,9 +25,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
-import androidx.lifecycle.lifecycleScope
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
+import androidx.webkit.WebViewAssetLoader
 
 class MainActivity : ComponentActivity() {
     private lateinit var bridge: AndroidBridge
@@ -32,7 +33,7 @@ class MainActivity : ComponentActivity() {
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         WindowCompat.setDecorFitsSystemWindows(window, false)
@@ -40,7 +41,19 @@ class MainActivity : ComponentActivity() {
         ctrl.hide(WindowInsetsCompat.Type.statusBars() or WindowInsetsCompat.Type.navigationBars())
         ctrl.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
 
+        // Enable WebView debugging for chrome://inspect (dev builds only)
+        WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
+
         bridge = AndroidBridge(this)
+
+        // Asset loader: serve local files under https://appassets.androidplatform.net/...
+        // This gives the page a proper HTTPS origin so cross-origin fetches/WS work.
+        val assetLoader = WebViewAssetLoader.Builder()
+            .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this))
+            .setDomain("appassets.androidplatform.net")
+            .setHttpAllowed(false)
+            .build()
+
         setContent {
             MaterialTheme(
                 colorScheme = darkColorScheme(
@@ -50,28 +63,39 @@ class MainActivity : ComponentActivity() {
                 Surface(modifier = Modifier.fillMaxSize(), color = androidx.compose.ui.graphics.Color(0xFF050508)) {
                     var loading by remember { mutableStateOf(true) }
                     var progress by remember { mutableStateOf(0f) }
+                    var errorMsg by remember { mutableStateOf<String?>(null) }
 
                     Box(Modifier.fillMaxSize()) {
                         AndroidView(
                             factory = { ctx ->
                                 WebView(ctx).apply {
+                                    tag = "mainWebView"
                                     setLayerType(View.LAYER_TYPE_HARDWARE, null)
                                     isVerticalScrollBarEnabled = false
                                     isHorizontalScrollBarEnabled = false
                                     overScrollMode = WebView.OVER_SCROLL_NEVER
+                                    isFocusable = true
+                                    isFocusableInTouchMode = true
+                                    isClickable = true
+                                    isLongClickable = true
                                     settings.apply {
                                         javaScriptEnabled = true
                                         domStorageEnabled = true
                                         databaseEnabled = true
                                         allowFileAccess = false
                                         allowContentAccess = false
+                                        allowFileAccessFromFileURLs = false
+                                        allowUniversalAccessFromFileURLs = true
                                         mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
                                         cacheMode = WebSettings.LOAD_DEFAULT
                                         mediaPlaybackRequiresUserGesture = false
+                                        javaScriptCanOpenWindowsAutomatically = true
+                                        loadsImagesAutomatically = true
                                         setSupportZoom(false)
                                         builtInZoomControls = false
                                         displayZoomControls = false
-                                        userAgentString = "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Mobile Safari/537.36 FuturesScanner/1.0"
+                                        userAgentString =
+                                            "Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36"
                                     }
                                     webChromeClient = object : WebChromeClient() {
                                         override fun onProgressChanged(view: WebView?, newProgress: Int) {
@@ -80,14 +104,44 @@ class MainActivity : ComponentActivity() {
                                                 view?.postDelayed({ loading = false }, 300)
                                             }
                                         }
+                                        override fun onConsoleMessage(cm: ConsoleMessage?): Boolean {
+                                            cm?.let {
+                                                val tag = "JSConsole[${it.sourceId()?.substringAfterLast('/')}:${it.lineNumber()}]"
+                                                when (it.messageLevel()) {
+                                                    ConsoleMessage.MessageLevel.ERROR -> Log.e(tag, it.message())
+                                                    ConsoleMessage.MessageLevel.WARNING -> Log.w(tag, it.message())
+                                                    else -> Log.d(tag, it.message())
+                                                }
+                                            }
+                                            return true
+                                        }
                                     }
                                     webViewClient = object : WebViewClient() {
+                                        override fun shouldInterceptRequest(
+                                            view: WebView?,
+                                            request: WebResourceRequest?
+                                        ) = request?.let { assetLoader.shouldInterceptRequest(it.url) }
+
+                                        override fun onReceivedError(
+                                            view: WebView?,
+                                            request: WebResourceRequest?,
+                                            error: WebResourceError?
+                                        ) {
+                                            super.onReceivedError(view, request, error)
+                                            if (request?.isForMainFrame == true) {
+                                                errorMsg = error?.description?.toString() ?: "Yükleme hatası"
+                                                loading = false
+                                            }
+                                            Log.e("PredatorWeb", "error ${error?.errorCode} : ${error?.description} @ ${request?.url}")
+                                        }
+
                                         override fun onPageFinished(view: WebView?, url: String?) {
                                             super.onPageFinished(view, url)
+                                            Log.i("PredatorWeb", "page finished: $url")
                                         }
                                     }
                                     addJavascriptInterface(bridge, "Android")
-                                    loadUrl("file:///android_asset/web/index.html")
+                                    loadUrl("https://appassets.androidplatform.net/assets/web/index.html")
                                 }
                             },
                             modifier = Modifier.fillMaxSize()
@@ -115,8 +169,9 @@ class MainActivity : ComponentActivity() {
                                 )
                                 Spacer(Modifier.height(8.dp))
                                 Text(
-                                    "Veriler yükleniyor...",
-                                    color = androidx.compose.ui.graphics.Color(0xFF8b949e),
+                                    errorMsg ?: "Veriler yükleniyor...",
+                                    color = if (errorMsg != null) androidx.compose.ui.graphics.Color(0xFFef5350)
+                                            else androidx.compose.ui.graphics.Color(0xFF8b949e),
                                     style = MaterialTheme.typography.bodySmall
                                 )
                             }
@@ -125,19 +180,10 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
-
-        // Poll connection status periodically and surface via bridge
-        lifecycleScope.launch {
-            while (true) {
-                delay(5000)
-                // keep-alive wake lock handled via system
-            }
-        }
     }
 
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
-        // Swallow back press — app is single-screen; back shouldn't exit accidentally
         moveTaskToBack(false)
     }
 }
