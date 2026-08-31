@@ -292,37 +292,32 @@ const PROXY_STATE = {
 };
 // REST endpoint listesi (fonksiyonlar, çünkü path parametre alır)
 function buildRestUrls(path){
-  const isAndroid = !!(window.Android && Android.signal);
+  // HEM web'de HEM Android'de aynı strateji: ÖNCE yurt dışı CORS proxy'leri (Türkiye'den
+  // direkt erişimde 451/geo-block yiyorsak bunlar yurt dışı sunucudan çağırır), SONRA
+  // doğrudan Binance host'ları. Android'de doğrudan URL'ler native OkHttp interceptor
+  // tarafından yakalanır; eğer kullanıcı VPN açıksa direkt geçer, değilse 451 döner ve
+  // zincir bir sonraki proxy'ye geçer.
+  //
+  // ÖNEMLİ: data-api.binance.vision SPOT aynasıdır (/api/v3), futures (/fapi/*) 404.
+  // api.binance.com da spot'tur, futures için kullanmıyoruz.
   const urls = [];
   const enc = encodeURIComponent(REST + path);
-  if (isAndroid){
-    // Android: native OkHttp interceptor Binance'e direkt gider (CORS/geo-block yok),
-    // önce ana host'u dene, sonra alternatif subdomain'ler.
-    urls.push(REST + path);                              // fapi.binance.com
-    urls.push("https://fapi1.binance.com" + path);
-    urls.push("https://fapi2.binance.com" + path);
-    urls.push("https://fapi3.binance.com" + path);
-    urls.push("https://fapi4.binance.com" + path);
-  } else {
-    // Web tarayıcı: Binance direkt cevaplarında CORS header'ı yok → preflight'sız bile cevap
-    // JS'e ulaşmaz. Bu yüzden ÖNCE CORS proxy'leri dene (proxy sunucu tarafında çağırır,
-    // tarayıcıya CORS header'larıyla döner). Sonda doğrudan denemeleri bırak (eğer kullanıcı
-    // bir şekilde CORS'u açmış bir uzantı kullanıyorsa veya Binance ileride açarsa).
-    //
-    // Not: data-api.binance.vision SPOT aynasıdır (/api/v3), futures (/fapi/*) 404 döner.
-    // api.binance.com da spot'tur, futures cevapları yanlış/sınırlı olur — kullanmıyoruz.
-    urls.push(`https://api.allorigins.win/raw?url=${enc}`);
-    urls.push(`https://corsproxy.io/?${enc}`);
-    urls.push(`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(REST + path)}`);
-    urls.push(`https://api.cors.lol/?url=${enc}`);
-    urls.push(`https://thingproxy.freeboard.io/fetch/${REST}${path}`);
-    // Doğrudan denemeler (CORS olmadığı için çoğu tarayıcıda başarısız olur ama hızlıca fail olur)
-    urls.push(REST + path);
-    urls.push("https://fapi1.binance.com" + path);
-    urls.push("https://fapi2.binance.com" + path);
-  }
+  // 1) Önce CORS proxy'leri (yurt dışı sunucular → geo-block/CORS sorunu yok)
+  urls.push(`https://api.allorigins.win/raw?url=${enc}`);
+  urls.push(`https://corsproxy.io/?${enc}`);
+  urls.push(`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(REST + path)}`);
+  urls.push(`https://api.cors.lol/?url=${enc}`);
+  urls.push(`https://thingproxy.freeboard.io/fetch/${REST}${path}`);
+  // 2) Doğrudan Binance (Android native interceptor bunu yakalar; VPN varsa direkt çalışır)
+  urls.push(REST + path);                                     // fapi.binance.com
+  urls.push("https://fapi1.binance.com" + path);
+  urls.push("https://fapi2.binance.com" + path);
+  urls.push("https://fapi3.binance.com" + path);
+  urls.push("https://fapi4.binance.com" + path);
+  // 3) Kullanıcı özel proxy (en yüksek öncelikli ama sona ekliyoruz ki önbellekli
+  //    çalışan proxy otomatik olarak seçilsin; isterse Ayarlar'dan ekler)
   if (PROXY_STATE.userProxy){
-    urls.push(PROXY_STATE.userProxy.replace("${url}", REST + path).replace("${enc}", enc));
+    urls.unshift(PROXY_STATE.userProxy.replace("${url}", REST + path).replace("${enc}", enc));
   }
   return urls;
 }
@@ -344,7 +339,7 @@ async function restFetch(path){
     PROXY_STATE.inFlight.add(u);
     try{
       const ctl = new AbortController();
-      const to = setTimeout(() => ctl.abort(), 6000);
+      const to = setTimeout(() => ctl.abort(), 4000);
       const r = await fetch(u, { cache:"no-store", signal:ctl.signal,
         mode:"cors", credentials:"omit" });
       clearTimeout(to);
@@ -395,10 +390,13 @@ function buildWsUrls(kind, streamsOrPath){
     // market: aggTrade + markPrice + forceOrder combined
     urls.push(`wss://fstream.binance.com/market/stream?streams=${streamsOrPath}`);
   } else if (kind === "public"){
-    // public (depth): high-frequency yönlendirilmiş endpoint
+    // public (depth): high-frequency yönlendirilmiş endpoint. Bazı İSS'ler
+    // /public/ws ve /public/stream'i kısıtlayabildiği için sırayla tüm alternatifleri
+    // deniyoruz. İlk gerçek veri mesajını alan kazanır.
     urls.push(`wss://fstream.binance.com/public/ws/${streamsOrPath}`);
     urls.push(`wss://fstream.binance.com/public/stream?streams=${streamsOrPath}`);
     urls.push(`wss://fstream.binance.com/ws/${streamsOrPath}`);
+    urls.push(`wss://fstream.binance.com/stream?streams=${streamsOrPath}`);
   }
   return urls;
 }
@@ -424,7 +422,7 @@ function openWsWithFallback(kind, streamsOrPath, stateKey, onOpen, onMessage, on
     let confirmedHere = false;
     const failTimer = setTimeout(() => {
       if (!confirmedHere) { try { ws.close(); } catch(_){} tryNext(); }
-    }, 4500);
+    }, 7000);
     ws.onopen = () => {
       // onopen almak yetmez — ilk veri mesajını da görmeliyiz. Bazı proxy'ler bağlantı
       // açıyor ama veri akmıyor (timeouts, CORS WS desteği yok vb.)
@@ -749,11 +747,28 @@ function connectPublicRaw(){
       scheduleRawReconnect("public");
     }
   );
-  // fetch snapshot & sync
+  // fetch snapshot & sync (WS'nin kapanmasını bekleme — snapshot ayrı retry)
   fetchDepthSnapshot(gen).catch(err => {
-    console.warn('depth snapshot failed', err);
-    if (gen === flow.depthGen) scheduleDepthReconnect();
+    console.warn('depth snapshot alınamadı (tekrar deneniyor):', err.message);
+    if (gen === flow.depthGen) scheduleSnapshotRetry();
   });
+}
+function scheduleSnapshotRetry(){
+  // Snapshot REST isteği başarısız olursa sadece snapshot'ı tekrar dene — WS'yi kapatma.
+  // WS açık kaldığı için bu arada gelen derinlik diff'leri buffer'da birikir; snapshot
+  // gelir gelmez hepsi uygulanır ve orderbook görünür.
+  const gen = flow.depthGen;
+  const delay = Math.min(15000, 2000 + 2000 * (S.raw.publicRetry++));
+  clearTimeout(S.raw.publicTimer);
+  flow.depthTimer = setTimeout(() => {
+    if (gen !== flow.depthGen || flow.depthSynced) return;
+    if (!S.raw.publicAlive) { scheduleRawReconnect("public"); return; }
+    fetchDepthSnapshot(gen).catch(err => {
+      console.warn('depth snapshot tekrar denemesi başarısız:', err.message);
+      if (gen === flow.depthGen && !flow.depthSynced) scheduleSnapshotRetry();
+    });
+  }, delay);
+  renderWsStatus(`Depth ${Math.round(delay/1000)}sn içinde`);
 }
 function scheduleDepthReconnect(){
   const delay = Math.min(30000, 1000 * Math.pow(2, S.raw.publicRetry++));
