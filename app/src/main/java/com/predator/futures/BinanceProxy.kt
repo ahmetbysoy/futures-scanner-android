@@ -40,11 +40,13 @@ object BinanceProxy {
     }
 
     // Intercept edilecek Binance REST host'ları. WS bu listede YOK — onlar doğrudan çalışıyor.
+    // DİKKAT: data-api.binance.vision SPOT aynasıdır (/api/v3), futures endpoint'leri (/fapi/*)
+    // 404 döndürür. Buraya EKLEMİYORUZ — aksi halde native proxy 404 alır ve JS tarafı gereksiz
+    // yere o host'u dener. Spot için api.binance.com zaten listede.
     private val BINANCE_HOSTS = setOf(
         "fapi.binance.com",
-        "fapi1.binance.com", "fapi2.binance.com", "fapi3.binance.com",
+        "fapi1.binance.com", "fapi2.binance.com", "fapi3.binance.com", "fapi4.binance.com",
         "api.binance.com",
-        "data-api.binance.vision",
         "api1.binance.com", "api2.binance.com", "api3.binance.com", "api4.binance.com"
     )
 
