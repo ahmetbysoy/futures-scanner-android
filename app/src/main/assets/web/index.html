@@ -1,0 +1,2655 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Futures Scanner — Stage 4</title>
+<script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+<style>
+:root{
+  --bg:#0d1117; --panel:#161b22; --border:#2a3038; --text:#e6e8ea; --muted:#8b949e;
+  --up:#26a69a; --down:#ef5350; --watch:#e0b64c; --accent:#4c8ce0;
+  --nav-h:56px; --head-h:52px;
+}
+html.light{
+  --bg:#f5f6f8; --panel:#ffffff; --border:#d8dde3; --text:#1c2128; --muted:#5a6570;
+}
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;overflow:hidden}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px}
+/* ---- Header ---- */
+#header{position:fixed;top:0;left:0;right:0;height:var(--head-h);background:var(--panel);
+  border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;
+  padding:0 10px;z-index:50;padding-top:env(safe-area-inset-top)}
+#symInput{flex:1;min-width:0;background:var(--bg);border:1px solid var(--border);color:var(--text);
+  border-radius:8px;padding:8px 10px;font-size:14px;text-transform:uppercase;outline:none}
+#lastPrice{font-variant-numeric:tabular-nums;font-weight:600;white-space:nowrap}
+#wsDot{width:9px;height:9px;border-radius:50%;background:var(--down);flex:none}
+#wsDot.on{background:var(--up)}
+#favBtn{background:none;border:none;font-size:20px;color:var(--muted);cursor:pointer;flex:none}
+#favBtn.active{color:var(--watch)}
+#symDrop{position:fixed;top:var(--head-h);left:0;right:0;max-height:45vh;overflow-y:auto;
+  background:var(--panel);border-bottom:1px solid var(--border);z-index:49;display:none}
+#symDrop .row{padding:11px 14px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between}
+#symDrop .row small{color:var(--muted)}
+/* ---- Views ---- */
+.view{position:fixed;top:var(--head-h);bottom:calc(var(--nav-h) + env(safe-area-inset-bottom));
+  left:0;right:0;display:none;overflow-y:auto}
+.view.active{display:flex;flex-direction:column}
+#view-chart{overflow:hidden}
+/* ---- Chart view ---- */
+#commentBar{padding:6px 10px;font-size:12.5px;color:var(--muted);background:var(--panel);
+  border-bottom:1px solid var(--border);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#tfBar{display:flex;gap:6px;padding:6px 10px;background:var(--panel);border-bottom:1px solid var(--border)}
+#tfBar button{flex:1;background:var(--bg);border:1px solid var(--border);color:var(--muted);
+  border-radius:6px;padding:5px 0;font-size:12px}
+#tfBar button.active{color:var(--text);border-color:var(--accent)}
+#chartWrap{flex:1;position:relative;min-height:0}
+#chart{position:absolute;inset:0}
+#statusPill{position:absolute;top:8px;left:8px;z-index:5;padding:4px 10px;border-radius:12px;
+  font-size:11px;font-weight:700;background:var(--panel);border:1px solid var(--border)}
+#flowMini{position:absolute;top:8px;right:8px;z-index:5;min-width:118px;padding:6px 8px;border-radius:10px;
+  background:rgba(22,27,34,.88);border:1px solid var(--border);backdrop-filter:blur(6px);font-size:10.5px;color:var(--muted)}
+html.light #flowMini{background:rgba(255,255,255,.9)}
+#flowMini .line{display:flex;justify-content:space-between;gap:8px;line-height:1.35}
+#flowMini b{font-variant-numeric:tabular-nums;color:var(--text);font-weight:700}
+.st-AL{color:var(--up)} .st-SAT{color:var(--down)} .st-IZLEMEDE{color:var(--watch)} .st-NOTR{color:var(--muted)}
+.pos{color:var(--up)!important}.neg{color:var(--down)!important}.warn{color:var(--watch)!important}
+
+/* ---- Depth overlay / DOM ladder / Heatmap ---- */
+#heatmap-canvas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:6;mix-blend-mode:screen;opacity:.68}
+#orderbook-overlay{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:8}
+#sync-badge{display:none;position:absolute;top:8px;right:54px;z-index:5;font:900 8px monospace;letter-spacing:.4px;color:#c4b5fd;background:rgba(76,140,224,.18);border:1px solid var(--border);padding:3px 7px;border-radius:999px}
+.whale-marker-up{color:var(--up)}.whale-marker-dn{color:var(--down)}
+@keyframes whaleFlash{0%{transform:scale(1.2);opacity:1}100%{transform:scale(1);opacity:.9}}
+
+/* ---- Cards / lists ---- */
+.card{background:var(--panel);border:1px solid var(--border);border-radius:10px;margin:10px;padding:14px}
+.card h3{font-size:13px;color:var(--muted);margin-bottom:8px;font-weight:600}
+#sigStatus{font-size:26px;font-weight:800}
+#sigRule{margin-top:6px;font-size:13px;color:var(--muted)}
+#sigLog .item{padding:8px 0 4px;border-top:1px solid var(--border);font-size:12.5px;display:flex;justify-content:space-between;gap:8px}
+.scoreBox{margin-top:10px}
+.scoreTop{display:flex;justify-content:space-between;align-items:center;font-size:12px;color:var(--muted);margin-bottom:5px}
+#sigScore{font-size:18px;font-weight:800;color:var(--text);font-variant-numeric:tabular-nums}
+.scoreTrack{height:8px;border-radius:99px;background:var(--bg);border:1px solid var(--border);overflow:hidden}
+#scoreFill{height:100%;width:0%;background:var(--muted);transition:width .25s ease, background .25s ease}
+#sigConf{margin-top:8px;font-size:12px;color:var(--muted);line-height:1.35}
+.reasonList{margin-top:8px;display:flex;flex-direction:column;gap:5px}
+.reason{font-size:11.5px;line-height:1.25;color:var(--muted);background:var(--bg);border:1px solid var(--border);border-radius:7px;padding:6px 8px}
+.metricGrid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:4px}
+.metric{background:var(--bg);border:1px solid var(--border);border-radius:9px;padding:8px;min-height:52px}
+.metric span{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+.metric b{display:block;color:var(--text);font-size:14px;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.setRow{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border);gap:10px}
+.setRow:last-child{border-bottom:none}
+.setRow input[type=number]{width:82px;background:var(--bg);border:1px solid var(--border);
+  color:var(--text);border-radius:6px;padding:5px;text-align:center}
+.setRow label{font-size:13.5px}
+.lineCtrl{display:flex;gap:6px;align-items:center}
+.lineCtrl input[type=color]{width:36px;height:28px;border:1px solid var(--border);border-radius:6px;background:var(--bg);padding:2px;cursor:pointer}
+.lineCtrl select{background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:5px 4px;font-size:12px}
+button.btn{background:var(--accent);border:none;color:#fff;border-radius:8px;padding:8px 14px;font-size:13px}
+.favRow{display:flex;justify-content:space-between;align-items:center;padding:12px 14px;border-bottom:1px solid var(--border)}
+.favRow .x{color:var(--down);background:none;border:none;font-size:16px}
+
+/* ---- Pattern Pool ---- */
+.histBox{margin-top:10px;background:var(--bg);border:1px solid var(--border);border-radius:9px;padding:9px 10px;font-size:12px;color:var(--muted);line-height:1.35}
+.histBox b{display:block;color:var(--text);font-size:12.5px;margin-bottom:4px}
+.histBox .histMain{color:var(--text);font-weight:700}
+.histBox .histSub{margin-top:3px;font-size:11.5px;color:var(--muted)}
+.poolControls{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:10px}
+.poolControls select,.poolControls input{background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:7px;padding:7px 8px;font-size:12px}
+.poolControls button{background:var(--accent);border:none;color:#fff;border-radius:7px;padding:7px 10px;font-size:12px}
+.poolTable{margin:0 10px 10px;border:1px solid var(--border);border-radius:10px;overflow:hidden;background:var(--panel)}
+.poolHead,.poolRow{display:grid;grid-template-columns:1.7fr .45fr .55fr .75fr .75fr .85fr .75fr;gap:6px;align-items:center;padding:8px 9px;border-bottom:1px solid var(--border);font-size:11.2px}
+.poolHead{position:sticky;top:0;background:var(--panel);z-index:2;color:var(--muted);font-weight:700}
+.poolRow{cursor:pointer;color:var(--text)}
+.poolRow:last-child{border-bottom:none}
+.poolRow small{display:block;color:var(--muted);font-size:10px;line-height:1.2;margin-top:2px}
+.badge{display:inline-flex;align-items:center;justify-content:center;border-radius:999px;border:1px solid var(--border);padding:3px 7px;font-size:10.5px;white-space:nowrap;background:var(--bg);color:var(--muted)}
+.badge.good{color:var(--up);border-color:rgba(38,166,154,.45)}
+.badge.bad{color:var(--down);border-color:rgba(239,83,80,.45)}
+.badge.wait{color:var(--watch);border-color:rgba(224,182,76,.45)}
+#poolDetail .sample{display:flex;justify-content:space-between;gap:8px;padding:7px 0;border-bottom:1px solid var(--border);font-size:11.5px}
+#poolDetail .sample:last-child{border-bottom:none}
+#poolDetail table{width:100%;border-collapse:collapse;font-size:11px;margin-top:6px}
+#poolDetail td,#poolDetail th{border-bottom:1px solid var(--border);padding:5px;text-align:left;color:var(--muted)}
+#poolDetail th{color:var(--text)}
+@media (max-width:430px){.poolHead,.poolRow{grid-template-columns:1.55fr .38fr .45fr .65fr .62fr .75fr .62fr;font-size:10.4px;padding:7px 6px}.poolControls{gap:6px}.badge{padding:2px 5px}}
+
+/* ---- Bottom nav ---- */
+#nav{position:fixed;bottom:0;left:0;right:0;height:calc(var(--nav-h) + env(safe-area-inset-bottom));
+  padding-bottom:env(safe-area-inset-bottom);background:var(--panel);border-top:1px solid var(--border);
+  display:flex;z-index:50}
+#nav button{flex:1;background:none;border:none;color:var(--muted);font-size:11px;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px}
+#nav button.active{color:var(--accent)}
+#nav .ico{font-size:19px}
+</style>
+</head>
+<body>
+<div id="header">
+  <span id="wsDot" title="WS durumu"></span>
+  <input id="symInput" placeholder="Coin ara (futures)..." autocomplete="off">
+  <button id="favBtn">☆</button>
+  <span id="lastPrice">—</span>
+</div>
+<div id="symDrop"></div>
+<div class="view active" id="view-chart">
+  <div id="commentBar">Bağlanıyor...</div>
+  <div id="tfBar"></div>
+  <div id="chartWrap">
+    <div id="statusPill" class="st-NOTR">NÖTR</div>
+    <div id="sync-badge">SENK</div>
+    <div id="flowMini">
+      <div class="line"><span>CVD60</span><b id="miniCvd">—</b></div>
+      <div class="line"><span>OBI</span><b id="miniObi">—</b></div>
+      <div class="line"><span>OI</span><b id="miniOi">—</b></div>
+      <div class="line"><span>Funding</span><b id="miniFund">—</b></div>
+    </div>
+    <div id="chart"></div>
+    <canvas id="heatmap-canvas"></canvas>
+    <canvas id="orderbook-overlay"></canvas>
+  </div>
+</div>
+<div class="view" id="view-signal">
+  <div class="card">
+    <h3>Karar Kartı</h3>
+    <div id="sigStatus" class="st-NOTR">NÖTR</div>
+    <div id="sigRule">Tetikleyici yok.</div>
+    <div class="scoreBox">
+      <div class="scoreTop"><span>Raw flow güven skoru</span><strong id="sigScore">—</strong></div>
+      <div class="scoreTrack"><div id="scoreFill"></div></div>
+    </div>
+    <div id="sigConf">Raw flow açık — veri ısınıyor. Katman 1 tetiklenince skor üretilecek.</div>
+    <div id="sigReasons" class="reasonList"></div>
+    <div id="patternHist" class="histBox"><b>Tarihsel Performans</b><span>Desen havuzu hazırlanıyor...</span></div>
+  </div>
+  <div class="card">
+    <h3>Raw Flow Anlık</h3>
+    <div class="metricGrid">
+      <div class="metric"><span>CVD 60s</span><b id="rawCvdVal">—</b></div>
+      <div class="metric"><span>OBI (tam derinlik)</span><b id="rawObiVal">—</b></div>
+      <div class="metric"><span>Open Interest Δ</span><b id="rawOiVal">—</b></div>
+      <div class="metric"><span>Funding</span><b id="rawFundVal">—</b></div>
+      <div class="metric"><span>Liq 60s</span><b id="rawLiqVal">—</b></div>
+      <div class="metric"><span>Spread</span><b id="rawSpreadVal">—</b></div>
+      <div class="metric"><span>Whale Mod</span><b id="rawModeVal">Açık</b></div>
+      <div class="metric"><span>Duvar (B/A)</span><b id="rawWallsVal">—</b></div>
+    </div>
+  </div>
+  <div class="card"><h3>Order Flow Olayları</h3><div id="flowLog"><div style="color:var(--muted);font-size:12px">Veri akışı bekleniyor...</div></div></div>
+  <div class="card"><h3>Sinyal Geçmişi</h3><div id="sigLog"><div style="color:var(--muted);font-size:12.5px">Henüz sinyal yok.</div></div></div>
+</div>
+<div class="view" id="view-settings">
+  <div class="card"><h3>Genel</h3>
+    <div class="setRow"><label>Koyu tema</label><input type="checkbox" id="setDark" checked></div>
+    <div class="setRow"><label>WS durumu</label><span id="wsText" style="font-size:12px;color:var(--muted);text-align:right">—</span></div>
+    <div class="setRow"><label>Manuel reconnect</label><button class="btn" id="reconnBtn">Yeniden Bağlan</button></div>
+  </div>
+  <div class="card"><h3>Havuz Motoru — Pattern Pool</h3>
+    <div class="setRow"><label>Win eşiği ret10 (%)</label><input type="number" id="setPatternWin" value="0.15" min="0" max="5" step="0.01"></div>
+    <div class="setRow"><label>Durum</label><span id="poolDbStatus" style="font-size:12px;color:var(--muted);text-align:right">Başlatılıyor...</span></div>
+    <div class="setRow"><label>Düşük desenleri sustur</label><input type="checkbox" id="setMuteWeak" disabled title="Yer ayrıldı — davranış sonraki fazda"></div>
+    <div class="setRow"><label>Dışa aktar</label><button class="btn" id="poolExportBtn">JSON indir</button></div>
+    <div class="setRow"><label>İçe aktar</label><button class="btn" id="poolImportBtn">JSON yükle</button><input id="poolImportFile" type="file" accept="application/json,.json" style="display:none"></div>
+  </div>
+  <div class="card"><h3>Sinyal Motoru (çekirdek — hesap her zaman aktif)</h3>
+    <div class="setRow"><label>MA hızlı</label><input type="number" id="setMa1" value="9" min="2"></div>
+    <div class="setRow"><label>MA orta</label><input type="number" id="setMa2" value="21" min="3"></div>
+    <div class="setRow"><label>MA yavaş</label><input type="number" id="setMa3" value="50" min="5"></div>
+    <div class="setRow"><label>SAR step</label><input type="number" id="setSarStep" value="0.02" step="0.01"></div>
+    <div class="setRow"><label>SAR max</label><input type="number" id="setSarMax" value="0.2" step="0.05"></div>
+    <div class="setRow"><label>Mum penceresi (N)</label><input type="number" id="setN" value="3" min="1" max="10"></div>
+  </div>
+  <div class="card"><h3>Katman 2 — Raw Flow Confirm/Veto</h3>
+    <div class="setRow"><label>Raw flow güven skoru</label><input type="checkbox" id="setRawConfirm" checked></div>
+    <div class="setRow"><label>Flow mini panel</label><input type="checkbox" id="setShowFlow" checked></div>
+    <div class="setRow"><label>Likidasyon marker</label><input type="checkbox" id="setShowLiq" checked></div>
+    <div class="setRow"><label>Min. likidasyon notional</label><input type="number" id="setLiqMin" value="50000" min="0" step="10000"></div>
+    <div class="setRow"><label>OI poll saniye</label><input type="number" id="setOiPoll" value="15" min="15" max="300"></div>
+    <div class="setRow"><label>Cascade eşiği % (5 mum)</label><input type="number" id="setCascadePct" value="0.8" min="0.1" max="10" step="0.1"></div>
+  </div>
+  <div class="card"><h3>Derinlik &amp; Likidite Katmanı (DOM)</h3>
+    <div class="setRow"><label>DOM Ladder sağ şerit</label><input type="checkbox" id="setShowLadder" checked></div>
+    <div class="setRow"><label>Likidite ısı haritası</label><input type="checkbox" id="setShowHeatmap" checked></div>
+    <div class="setRow"><label>Whale/sweep/spoof avı</label><input type="checkbox" id="setWhaleAlerts" checked></div>
+    <div class="setRow"><label>Whale eşiği (USDT)</label><input type="number" id="setWhaleMin" value="300000" min="50000" step="50000"></div>
+    <div class="setRow"><label>Duvar eşiği (P)</label><input type="number" id="setWallPct" value="90" min="80" max="99" step="1"></div>
+  </div>
+  <div class="card"><h3>Klasik TA Katmanı (opsiyonel)</h3>
+    <div class="setRow"><label>Bollinger Bands</label><input type="checkbox" id="setShowBB" checked></div>
+    <div class="setRow"><label>BB periyot</label><input type="number" id="setBBPeriod" value="20" min="5" max="200"></div>
+    <div class="setRow"><label>BB std</label><input type="number" id="setBBStd" value="2" min="0.5" max="5" step="0.1"></div>
+    <div class="setRow"><label>RSI</label><input type="checkbox" id="setShowRsi" checked></div>
+    <div class="setRow"><label>RSI periyot</label><input type="number" id="setRsiPeriod" value="14" min="2" max="100"></div>
+    <div class="setRow"><label>MACD</label><input type="checkbox" id="setShowMacd" checked></div>
+    <div class="setRow"><label>MACD hızlı</label><input type="number" id="setMacdFast" value="12" min="2" max="100"></div>
+    <div class="setRow"><label>MACD yavaş</label><input type="number" id="setMacdSlow" value="26" min="3" max="200"></div>
+    <div class="setRow"><label>MACD signal</label><input type="number" id="setMacdSignal" value="9" min="2" max="100"></div>
+    <div class="setRow"><label>VWAP</label><input type="checkbox" id="setShowVwap" checked></div>
+  </div>
+  <div class="card"><h3>Görünürlük (hesap arka planda devam eder)</h3>
+    <div class="setRow"><label>MA çizgileri</label><input type="checkbox" id="setShowMa" checked></div>
+    <div class="setRow"><label>SAR noktaları</label><input type="checkbox" id="setShowSar" checked></div>
+    <div class="setRow"><label>Hacim paneli</label><input type="checkbox" id="setShowVol" checked></div>
+  </div>
+  <div class="card"><h3>Çizgi Renk &amp; Kalınlık</h3>
+    <div class="setRow"><label>MA hızlı</label><div class="lineCtrl"><input type="color" id="colMa1"><select id="widMa1"><option value="1">1px</option><option value="2">2px</option><option value="3">3px</option><option value="4">4px</option></select></div></div>
+    <div class="setRow"><label>MA orta</label><div class="lineCtrl"><input type="color" id="colMa2"><select id="widMa2"><option value="1">1px</option><option value="2">2px</option><option value="3">3px</option><option value="4">4px</option></select></div></div>
+    <div class="setRow"><label>MA yavaş</label><div class="lineCtrl"><input type="color" id="colMa3"><select id="widMa3"><option value="1">1px</option><option value="2">2px</option><option value="3">3px</option><option value="4">4px</option></select></div></div>
+    <div class="setRow"><label>SAR</label><div class="lineCtrl"><input type="color" id="colSar"><select id="widSar"><option value="1">1px</option><option value="2">2px</option><option value="3">3px</option><option value="4">4px</option></select></div></div>
+    <div class="setRow"><label>Bollinger Bands</label><div class="lineCtrl"><input type="color" id="colBB"><select id="widBB"><option value="1">1px</option><option value="2">2px</option><option value="3">3px</option><option value="4">4px</option></select></div></div>
+    <div class="setRow"><label>VWAP</label><div class="lineCtrl"><input type="color" id="colVwap"><select id="widVwap"><option value="1">1px</option><option value="2">2px</option><option value="3">3px</option><option value="4">4px</option></select></div></div>
+    <div class="setRow"><label>RSI</label><div class="lineCtrl"><input type="color" id="colRsi"><select id="widRsi"><option value="1">1px</option><option value="2">2px</option><option value="3">3px</option><option value="4">4px</option></select></div></div>
+    <div class="setRow"><label>MACD çizgisi</label><div class="lineCtrl"><input type="color" id="colMacd"><select id="widMacd"><option value="1">1px</option><option value="2">2px</option><option value="3">3px</option><option value="4">4px</option></select></div></div>
+    <div class="setRow"><label>MACD sinyali</label><div class="lineCtrl"><input type="color" id="colMacdSig"><select id="widMacdSig"><option value="1">1px</option><option value="2">2px</option><option value="3">3px</option><option value="4">4px</option></select></div></div>
+    <div class="setRow"><label>Sıfırla</label><button class="btn" id="resetLineStyleBtn">Varsayılana Dön</button></div>
+  </div>
+</div>
+<div class="view" id="view-pool">
+  <div class="poolControls">
+    <select id="poolTfFilter"><option value="all">TF: Hepsi</option><option value="1m">1m</option><option value="5m">5m</option></select>
+    <select id="poolMinFilter"><option value="0">Min örnek: 0</option><option value="15">15+</option><option value="30">30+</option><option value="50">50+</option></select>
+    <button id="poolRefreshBtn">Yenile</button>
+  </div>
+  <div id="poolWarn" class="card" style="display:none;color:var(--watch);font-size:12px"></div>
+  <div class="poolTable">
+    <div class="poolHead"><span>Desen</span><span>TF</span><span>N</span><span>Wilson</span><span>Ret10</span><span>MFE/MAE</span><span>Durum</span></div>
+    <div id="poolRows"><div style="padding:12px;color:var(--muted);font-size:12px">Havuz yükleniyor...</div></div>
+  </div>
+  <div class="card"><h3>Desen Detayı</h3><div id="poolDetail" style="color:var(--muted);font-size:12px">Leaderboard'dan bir desen seç.</div></div>
+</div>
+<div class="view" id="view-favs">
+  <div class="card"><h3>Favoriler</h3><div id="favList"></div></div>
+  <div class="card"><h3>Son Kullanılanlar</h3><div id="recentList"></div></div>
+</div>
+<div id="nav">
+  <button data-view="chart" class="active"><span class="ico">📈</span>Grafik</button>
+  <button data-view="signal"><span class="ico">⚡</span>Sinyal</button>
+  <button data-view="settings"><span class="ico">⚙️</span>Ayarlar</button>
+  <button data-view="pool"><span class="ico">🧠</span>Havuz</button>
+  <button data-view="favs"><span class="ico">⭐</span>Favoriler</button>
+</div>
+<script>
+"use strict";
+/* ================= 1. STATE & CONFIG ================= */
+const REST = "https://fapi.binance.com";
+// Nisan 2026 migration sonrası routed endpoint'ler.
+// /market: kline, aggTrade, markPrice, forceOrder. /public: high-frequency depth.
+const WS_MARKET = "wss://fstream.binance.com/market";
+const WS_PUBLIC = "wss://fstream.binance.com/public";
+const TFS = ["1m","5m"];
+const PATTERN_TFS = ["1m","5m"];
+const S = {
+  symbol: localStorage.getItem("fs_symbol") || "BTCUSDT",
+  interval: localStorage.getItem("fs_interval") || "5m",
+  candles: [],                 // {time,open,high,low,close,volume} — time: saniye
+  symbols: [],                 // futures perpetual sembol listesi
+  settings: Object.assign({
+    ma1:9, ma2:21, ma3:50, sarStep:0.02, sarMax:0.2, nWindow:3,
+    dark:true, showMa:true, showSar:true, showVol:true,
+    rawConfirm:true, showFlow:true, showLiq:true, liqMin:50000, oiPollSec:15, cascadePct:0.8,
+    showLadder:true, showHeatmap:true, whaleAlerts:true, whaleMin:300000, wallPct:90,
+    showBB:true, showRsi:true, showMacd:true, showVwap:true,
+    bbPeriod:20, bbStd:2, rsiPeriod:14, macdFast:12, macdSlow:26, macdSignal:9,
+    patternWinPct:0.15,
+    ma1Color:"#e0b64c", ma2Color:"#4c8ce0", ma3Color:"#b06ce0",
+    ma1Width:1, ma2Width:1, ma3Width:1,
+    sarColor:"#9aa4ae", sarWidth:1,
+    bbColor:"#4c8ce0", bbWidth:1,
+    vwapColor:"#ff9800", vwapWidth:2,
+    rsiColor:"#fdd835", rsiWidth:1,
+    macdColor:"#00bcd4", macdWidth:1,
+    macdSignalColor:"#ff7043", macdSignalWidth:1
+  }, JSON.parse(localStorage.getItem("fs_settings")||"{}")),
+  favs: JSON.parse(localStorage.getItem("fs_favs")||"[]"),
+  recents: JSON.parse(localStorage.getItem("fs_recents")||"[]"),
+  ws: null, wsRetry: 0, wsLastMsg: 0, wsAlive: false, wsTimer: null,
+  tickSize: {}, pricePrecision: {},
+  raw: {
+    marketWs:null, publicWs:null,
+    marketRetry:0, publicRetry:0,
+    marketTimer:null, publicTimer:null, oiTimer:null,
+    marketAlive:false, publicAlive:false,
+    marketLastMsg:0, publicLastMsg:0
+  }
+};
+const engine = { pending:null, pendingMulti:[], status:"NOTR", statusText:"Tetikleyici yok.", log:[], markers:[], lastRaw:null };
+const flow = {
+  trades:[], liqs:[], markers:[], startedAt:Date.now(),
+  cvd:0, obi:0, bidVol:0, askVol:0,
+  oi:null, oiPrev:null, oiChangePct:0, funding:null, markPrice:null, nextFunding:null,
+  bestBid:0, bestAsk:0, spread:0,
+  bidsBook:new Map(), asksBook:new Map(),
+  lastTradeTs:0, lastDepthTs:0, lastMarkTs:0, lastOiTs:0,
+  heatmapFrames:[], lastHeatSample:0,
+  wallAges:new Map(), wallCount:{bid:0,ask:0},
+  events:[], eventMarkers:[], lastWhale:0, lastSweep:0, lastAbsorb:0, lastBurst:0,
+  depthReady:false, depthSynced:false, depthLastUpdate:0, depthBuffer:[],
+  depthWs:null, depthGen:0, depthRetry:0, depthTimer:null
+};
+const $ = id => document.getElementById(id);
+const clamp = (v,min,max) => Math.max(min, Math.min(max, v));
+const overlayCv = $('orderbook-overlay'), ctxO = overlayCv?.getContext('2d');
+const heatCv = $('heatmap-canvas'), ctxH = heatCv?.getContext('2d');
+
+/* ===== Depth & Liquidity constants ===== */
+const DEPTH_BIN_PX = 2, WALL_TICK_GROUP = 10, WALL_MIN_AGE = 25000, SPOOF_MAX_AGE = 8000;
+const HEAT_WINDOW_SEC = 900, HEAT_SAMPLE_MS = 1000, HEAT_MAX_BINS = 220;
+const LADDER_DEFAULT_W = 48;
+const save = () => {
+  localStorage.setItem("fs_settings", JSON.stringify(S.settings));
+  localStorage.setItem("fs_favs", JSON.stringify(S.favs));
+  localStorage.setItem("fs_recents", JSON.stringify(S.recents));
+  localStorage.setItem("fs_symbol", S.symbol);
+  localStorage.setItem("fs_interval", S.interval);
+};
+/* ---- Grafik zoom/pan hafızası (sembol+timeframe bazlı) ---- */
+let rangeSaveTimer = null;
+function chartRangeKey(){ return S.symbol + "_" + S.interval; }
+function saveVisibleRange(){
+  if (!chart) return;
+  const r = chart.timeScale().getVisibleLogicalRange();
+  if (!r) return;
+  let ranges = {};
+  try { ranges = JSON.parse(localStorage.getItem("fs_ranges") || "{}"); } catch(e) {}
+  ranges[chartRangeKey()] = r;
+  localStorage.setItem("fs_ranges", JSON.stringify(ranges));
+}
+function restoreOrFitChart(){
+  let ranges = {};
+  try { ranges = JSON.parse(localStorage.getItem("fs_ranges") || "{}"); } catch(e) {}
+  const r = ranges[chartRangeKey()];
+  if (r && S.candles.length){
+    try { chart.timeScale().setVisibleLogicalRange(r); return; } catch(e) {}
+  }
+  chart.timeScale().fitContent();
+}
+/* ================= 2. REST ================= */
+async function loadSymbols(){
+  try{
+    const r = await fetch(REST + "/fapi/v1/exchangeInfo");
+    const j = await r.json();
+    S.symbols = j.symbols
+      .filter(s => s.contractType === "PERPETUAL" && s.quoteAsset === "USDT" && s.status === "TRADING")
+      .map(s => s.symbol).sort();
+    j.symbols.forEach(s => {
+      if (s.contractType === "PERPETUAL" && s.quoteAsset === "USDT") {
+        const filter = s.filters.find(f => f.filterType === "PRICE_FILTER");
+        if (filter && filter.tickSize) {
+          const tick = parseFloat(filter.tickSize);
+          S.tickSize[s.symbol] = tick;
+          S.pricePrecision[s.symbol] = Math.max(0, Math.round(-Math.log10(tick)));
+        }
+      }
+    });
+  }catch(e){ console.error("exchangeInfo hata:", e); }
+}
+async function fetchKlines(symbol, interval, limit=600){
+  const r = await fetch(`${REST}/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`);
+  const j = await r.json();
+  if (!Array.isArray(j)) throw new Error("Kline REST cevabı geçersiz");
+  return j.map(k => ({
+    time: k[0]/1000, open:+k[1], high:+k[2], low:+k[3], close:+k[4], volume:+k[5]
+  }));
+}
+async function loadKlines(){
+  S.candles = await fetchKlines(S.symbol, S.interval, 600);
+  if (S.candles.length) $("lastPrice").textContent = fmt(S.candles[S.candles.length-1].close);
+}
+async function loadOpenInterest(){
+  if (!S.settings.rawConfirm) return;
+  try{
+    const r = await fetch(`${REST}/fapi/v1/openInterest?symbol=${S.symbol}`);
+    const j = await r.json();
+    const val = +j.openInterest;
+    if (Number.isFinite(val) && val > 0){
+      flow.oiPrev = flow.oi;
+      flow.oi = val;
+      flow.lastOiTs = Date.now();
+      flow.oiChangePct = flow.oiPrev ? ((flow.oi - flow.oiPrev) / flow.oiPrev) * 100 : 0;
+    }
+  }catch(e){ console.warn("openInterest hata:", e); }
+  try{ // markPrice WS gecikirse funding fallback
+    if (flow.funding == null || Date.now() - flow.lastMarkTs > 15000){
+      const r2 = await fetch(`${REST}/fapi/v1/premiumIndex?symbol=${S.symbol}`);
+      const j2 = await r2.json();
+      const fr = +j2.lastFundingRate;
+      if (Number.isFinite(fr)) flow.funding = fr;
+      if (j2.markPrice) flow.markPrice = +j2.markPrice;
+    }
+  }catch(e){ /* sessiz */ }
+  queueFlowRender();
+}
+function startOiPolling(){
+  clearInterval(S.raw.oiTimer);
+  if (!S.settings.rawConfirm) return;
+  const sec = clamp(+S.settings.oiPollSec || 30, 15, 300);
+  loadOpenInterest();
+  S.raw.oiTimer = setInterval(loadOpenInterest, sec * 1000);
+}
+/* ================= 3. WS INGESTION ================= */
+function wsPayload(ev){
+  let d; try{ d = JSON.parse(ev.data); }catch(e){ return null; }
+  return d && d.data ? d.data : d; // combined-stream sarmalaması gelirse aç
+}
+function wsConnect(){
+  if (S.ws){ S.ws.onclose = null; try{S.ws.close();}catch(e){} S.ws = null; }
+  clearTimeout(S.wsTimer);
+  const url = `${WS_MARKET}/ws/${S.symbol.toLowerCase()}@kline_${S.interval}`;
+  const ws = new WebSocket(url);
+  S.ws = ws;
+  ws.onopen = () => {
+    const hadRetry = S.wsRetry > 0;
+    S.wsRetry = 0; S.wsAlive = true; S.wsLastMsg = Date.now(); renderWsStatus();
+    if (hadRetry){
+      loadKlines().then(() => { redrawAll(); runEngine(); patternBackfillSymbol(S.symbol).catch(()=>{}); }).catch(()=>{});
+    }
+  };
+  ws.onmessage = ev => {
+    S.wsLastMsg = Date.now();
+    const d = wsPayload(ev); if (!d || d.e !== "kline") return;
+    onKline(d.k);
+  };
+  ws.onclose = () => { if (S.ws !== ws) return; S.wsAlive = false; renderWsStatus(); scheduleKlineReconnect(); };
+  ws.onerror = () => { try{ws.close();}catch(e){} };
+}
+function scheduleKlineReconnect(){
+  const delay = Math.min(30000, 1000 * Math.pow(2, S.wsRetry++));
+  clearTimeout(S.wsTimer);
+  S.wsTimer = setTimeout(wsConnect, delay);
+  renderWsStatus(`Kline ${Math.round(delay/1000)}sn sonra`);
+}
+function startRaw(){
+  if (!S.settings.rawConfirm){ stopRaw(); return; }
+  connectMarketRaw();
+  connectPublicRaw();
+  startOiPolling();
+}
+function stopRaw(){
+  clearTimeout(S.raw.marketTimer); clearTimeout(S.raw.publicTimer); clearInterval(S.raw.oiTimer);
+  if (S.raw.marketWs){ S.raw.marketWs.onclose = null; try{S.raw.marketWs.close();}catch(e){} S.raw.marketWs = null; }
+  if (S.raw.publicWs){ S.raw.publicWs.onclose = null; try{S.raw.publicWs.close();}catch(e){} S.raw.publicWs = null; }
+  stopDepthWs();
+  S.raw.marketAlive = false; S.raw.publicAlive = false;
+  renderWsStatus(); queueFlowRender();
+}
+function restartRaw(reset=true){
+  stopRaw();
+  if (reset) resetFlow();
+  if (S.settings.rawConfirm) startRaw();
+}
+function connectMarketRaw(){
+  if (!S.settings.rawConfirm) return;
+  if (S.raw.marketWs){ S.raw.marketWs.onclose = null; try{S.raw.marketWs.close();}catch(e){} S.raw.marketWs = null; }
+  clearTimeout(S.raw.marketTimer);
+  const sym = S.symbol.toLowerCase();
+  const streams = [`${sym}@aggTrade`, `${sym}@markPrice@1s`, `${sym}@forceOrder`].join("/");
+  const ws = new WebSocket(`${WS_MARKET}/stream?streams=${streams}`);
+  S.raw.marketWs = ws;
+  ws.onopen = () => { S.raw.marketRetry = 0; S.raw.marketAlive = true; S.raw.marketLastMsg = Date.now(); renderWsStatus(); };
+  ws.onmessage = ev => {
+    S.raw.marketLastMsg = Date.now();
+    const d = wsPayload(ev); if (!d) return;
+    if (d.s && d.s !== S.symbol) return;
+    if (d.e === "aggTrade") onAggTrade(d);
+    else if (d.e === "markPriceUpdate") onMarkPrice(d);
+    else if (d.e === "forceOrder") onForceOrder(d);
+  };
+  ws.onclose = () => { if (S.raw.marketWs !== ws) return; S.raw.marketAlive = false; renderWsStatus(); scheduleRawReconnect("market"); };
+  ws.onerror = () => { try{ws.close();}catch(e){} };
+}
+function connectPublicRaw(){
+  if (!S.settings.rawConfirm) return;
+  // full depth: connect diff stream + fetch REST snapshot
+  const gen = ++flow.depthGen;
+  if (flow.depthWs){ flow.depthWs.onclose = null; try{flow.depthWs.close();}catch(e){} flow.depthWs = null; }
+  clearTimeout(S.raw.publicTimer);
+  const sym = S.symbol.toLowerCase();
+  const ws = new WebSocket(`${WS_PUBLIC}/ws/${sym}@depth@100ms`);
+  flow.depthWs = ws; S.raw.publicWs = ws;
+  ws.onopen = () => { S.raw.publicRetry = 0; S.raw.publicAlive = true; S.raw.publicLastMsg = Date.now(); renderWsStatus(); };
+  ws.onmessage = ev => {
+    S.raw.publicLastMsg = Date.now();
+    let d; try{ d = JSON.parse(ev.data); }catch(e){ return; }
+    if (d.data) d = d.data;
+    if (!d) return;
+    if (!flow.depthSynced){ flow.depthBuffer.push(d); if (flow.depthBuffer.length > 3000) flow.depthBuffer.shift(); return; }
+    applyDepthUpdate(d);
+  };
+  ws.onclose = () => {
+    if (flow.depthWs !== ws) return;
+    S.raw.publicAlive = false;
+    renderWsStatus();
+    flow.depthReady = false; flow.depthSynced = false;
+    scheduleRawReconnect("public");
+  };
+  ws.onerror = () => { try{ws.close();}catch(e){} };
+  // fetch snapshot & sync
+  fetchDepthSnapshot(gen).catch(err => {
+    console.warn('depth snapshot failed', err);
+    if (gen === flow.depthGen) scheduleDepthReconnect();
+  });
+}
+function scheduleDepthReconnect(){
+  const delay = Math.min(30000, 1000 * Math.pow(2, S.raw.publicRetry++));
+  clearTimeout(S.raw.publicTimer);
+  flow.depthTimer = setTimeout(connectPublicRaw, delay);
+  renderWsStatus(`Depth ${Math.round(delay/1000)}sn sonra`);
+}
+async function fetchDepthSnapshot(gen){
+  const r = await fetch(`${REST}/fapi/v1/depth?symbol=${S.symbol}&limit=1000`);
+  if (!r.ok) throw new Error('depth snapshot HTTP ' + r.status);
+  const snap = await r.json();
+  if (gen !== flow.depthGen || !flow.depthWs) return;
+  flow.bidsBook = new Map(); flow.asksBook = new Map();
+  (snap.bids||[]).forEach(([p,q]) => { const P=+p,Q=+q; if (Q>0) flow.bidsBook.set(P,Q); });
+  (snap.asks||[]).forEach(([p,q]) => { const P=+p,Q=+q; if (Q>0) flow.asksBook.set(P,Q); });
+  flow.depthLastUpdate = +snap.lastUpdateId || 0;
+  // apply buffered diffs with U <= lastUpdateId+1 and u >= lastUpdateId
+  const relevant = [];
+  for (const m of flow.depthBuffer){
+    const U = +m.U, u = +m.u;
+    if (!Number.isFinite(U) || !Number.isFinite(u)) continue;
+    if (u < flow.depthLastUpdate + 1) continue;   // already in snapshot
+    if (U > flow.depthLastUpdate + 1) {           // gap
+      flow.depthBuffer = [];
+      return fetchDepthSnapshot(gen);
+    }
+    relevant.push(m);
+  }
+  relevant.forEach(m => applyDepthUpdate(m, true));
+  flow.depthBuffer = [];
+  flow.depthSynced = true; flow.depthReady = true;
+  showSyncBadge(false);
+  recomputeBest();
+  computeObi();
+  heatmapSample(true);
+  markOverlayDirty(); flowDirty = true;
+}
+function applyDepthUpdate(m, fromSync){
+  const finalId = +m.u;
+  if (!fromSync && finalId <= flow.depthLastUpdate) return;
+  const now = Date.now();
+  // track level ages for spoof detection on levels near top-of-book
+  const nearBB = flow.bestBid, nearBA = flow.bestAsk;
+  const nearRange = flow.bestAsk * 0.003;
+  const upd = (book, arr, side) => {
+    for (const x of (arr||[])){
+      const P = +x[0], Q = +x[1];
+      const oldQ = book.get(P) || 0;
+      const oldNotional = P * oldQ;
+      const whaleMin = whaleThresholdNotional();
+      if (Q === 0){
+        if (oldQ > 0){
+          // spoof detection: big wall vanished quickly near top
+          if (oldNotional >= whaleMin){
+            const k = wallKey(P, side);
+            const born = flow.wallAges.get(k)?.born || now;
+            const age = now - born;
+            if (age < SPOOF_MAX_AGE && nearBB && nearBA && Math.abs(P - (side==='B'?nearBB:nearBA))/nearBA < 0.003){
+              addFlowEvent('SPOOF?', 'medium', `Spoof silindi ${side==='B'?'BİD':'ASK'} ${compact(oldNotional)} @ ${fmtPrice(P)} (${(age/1000).toFixed(1)}s)`);
+            }
+          }
+          book.delete(P);
+          flow.wallAges.delete(wallKey(P, side));
+        }
+      } else {
+        book.set(P, Q);
+        const k = wallKey(P, side);
+        if (!flow.wallAges.has(k)) flow.wallAges.set(k, {born:now, peak:oldNotional});
+        const rec = flow.wallAges.get(k);
+        rec.peak = Math.max(rec.peak||0, P*Q);
+      }
+    }
+  };
+  upd(flow.bidsBook, m.b, 'B');
+  upd(flow.asksBook, m.a, 'A');
+  flow.depthLastUpdate = finalId;
+  flow.lastDepthTs = now;
+  recomputeBest();
+  computeObi();
+  heatmapSample();
+  detectWalls();
+  flowDirty = true;
+  markOverlayDirty();
+}
+function recomputeBest(){
+  let bb = 0, ba = Infinity;
+  for (const p of flow.bidsBook.keys()) if (p > bb) bb = p;
+  for (const p of flow.asksBook.keys()) if (p < ba) ba = p;
+  flow.bestBid = bb; flow.bestAsk = isFinite(ba) ? ba : 0;
+  if (bb && isFinite(ba) && ba > bb){
+    flow.spread = ba - bb;
+  } else {
+    flow.spread = 0;
+  }
+}
+function computeObi(bandPct = 0.01){
+  if (!flow.bestBid || !flow.bestAsk) { flow.obi = 0; flow.bidVol = 0; flow.askVol = 0; return; }
+  const mid = (flow.bestBid + flow.bestAsk) / 2;
+  const lo = mid * (1 - bandPct), hi = mid * (1 + bandPct);
+  let bv = 0, av = 0;
+  for (const [p,q] of flow.bidsBook){ if (p >= lo) bv += p * q; }
+  for (const [p,q] of flow.asksBook){ if (p <= hi) av += p * q; }
+  flow.bidVol = bv; flow.askVol = av;
+  flow.obi = (bv + av) > 0 ? (bv - av) / (bv + av) : 0;
+}
+function whaleThresholdNotional(){
+  return Math.max(50000, +S.settings.whaleMin || 300000);
+}
+function detectWalls(){
+  if (!flow.bestBid || !flow.bestAsk){ flow.wallCount = {bid:0,ask:0}; return; }
+  const now = Date.now();
+  const mid = (flow.bestBid + flow.bestAsk)/2;
+  const range = mid * 0.003;
+  const bids = [], asks = [];
+  // group into WALL_TICK_GROUP step bins, aggregate notional
+  const bb = flow.bidsBook, aa = flow.asksBook;
+  const step = depthTickSize();
+  const bin = (map, side, out, sign) => {
+    const groups = new Map();
+    for (const [p,q] of map){
+      if (Math.abs(p - mid) > range) continue;
+      const key = Math.round(p/step);
+      const agg = groups.get(key) || {price:0, qty:0, n:0};
+      agg.price += p*q; agg.qty += q; agg.n++;
+      groups.set(key, agg);
+    }
+    for (const g of groups.values()){
+      const p = g.price/g.qty, notional = p*g.qty;
+      out.push({side, price:p, notional});
+    }
+  };
+  bin(bb, 'B', bids, 1); bin(aa, 'A', asks, -1);
+  const all = [...bids, ...asks];
+  if (!all.length){ flow.wallCount = {bid:0,ask:0}; return; }
+  // percentile threshold
+  const vals = all.map(w=>w.notional);
+  vals.sort((a,b)=>a-b);
+  const idx = Math.floor(vals.length * ((+S.settings.wallPct||90)/100));
+  const thr = vals[Math.min(vals.length-1, idx)] || 0;
+  let bidC = 0, askC = 0;
+  for (const w of all){
+    if (w.notional >= thr){
+      if (w.side === 'B') bidC++; else askC++;
+      // persist wall age
+      const k = wallKey(w.price, w.side);
+      if (!flow.wallAges.has(k)) flow.wallAges.set(k, {born:now, peak:w.notional});
+    }
+  }
+  flow.wallCount = {bid:bidC, ask:askC};
+}
+function scheduleRawReconnect(kind){
+  if (!S.settings.rawConfirm) return;
+  const key = kind === "market" ? "marketRetry" : "publicRetry";
+  const timerKey = kind === "market" ? "marketTimer" : "publicTimer";
+  const fn = kind === "market" ? connectMarketRaw : connectPublicRaw;
+  const delay = Math.min(30000, 1000 * Math.pow(2, S.raw[key]++));
+  clearTimeout(S.raw[timerKey]);
+  S.raw[timerKey] = setTimeout(fn, delay);
+  renderWsStatus(`${kind} ${Math.round(delay/1000)}sn sonra`);
+}
+function renderWsStatus(extra=""){
+  const parts = [S.wsAlive ? "Kline✓" : "Kline×"];
+  if (S.settings.rawConfirm){
+    parts.push(S.raw.marketAlive ? "Market✓" : "Market×");
+    parts.push(S.raw.publicAlive ? (flow.depthSynced?"Depth✓":"Depth…") : "Depth×");
+  } else parts.push("Raw kapalı");
+  if (extra) parts.push(extra);
+  if ($("wsText")) $("wsText").textContent = parts.join(" | ");
+  const ok = S.wsAlive && (!S.settings.rawConfirm || (S.raw.marketAlive && S.raw.publicAlive && flow.depthSynced));
+  if ($("wsDot")) $("wsDot").classList.toggle("on", ok);
+}
+setInterval(() => {                       // sessiz kopma bekçisi
+  const now = Date.now();
+  if (S.wsAlive && now - S.wsLastMsg > 45000){ try{S.ws.close();}catch(e){} }
+  if (S.settings.rawConfirm && S.raw.marketAlive && now - S.raw.marketLastMsg > 30000){ try{S.raw.marketWs.close();}catch(e){} }
+  if (S.settings.rawConfirm && S.raw.publicAlive && now - S.raw.publicLastMsg > 30000){ try{S.raw.publicWs.close();}catch(e){} }
+}, 10000);
+function onKline(k){
+  const c = { time:k.t/1000, open:+k.o, high:+k.h, low:+k.l, close:+k.c, volume:+k.v };
+  const last = S.candles[S.candles.length-1];
+  if (last && last.time === c.time) S.candles[S.candles.length-1] = c;
+  else { S.candles.push(c); if (S.candles.length > 700) S.candles.shift(); }
+  scheduleLiveUpdate(c);
+  $("lastPrice").textContent = fmt(c.close);
+  if (k.x){
+    runEngineAndRedraw();          // sadece confirmed close'ta motor çalışır
+    patternPoolOnClosedCandle(S.symbol, S.interval, S.candles).catch(e => console.warn("pattern closed hata", e));
+  }
+}
+/* ================= 4. RAW FLOW INGESTION ================= */
+function resetFlow(){
+  flow.trades = []; flow.liqs = []; flow.markers = []; flow.eventMarkers = []; flow.events = [];
+  flow.startedAt = Date.now(); flow.cvd = 0; flow.obi = 0; flow.bidVol = 0; flow.askVol = 0;
+  flow.oi = null; flow.oiPrev = null; flow.oiChangePct = 0; flow.funding = null; flow.markPrice = null; flow.nextFunding = null;
+  flow.bestBid = 0; flow.bestAsk = 0; flow.spread = 0;
+  flow.bidsBook = new Map(); flow.asksBook = new Map();
+  flow.lastTradeTs = 0; flow.lastDepthTs = 0; flow.lastMarkTs = 0; flow.lastOiTs = 0;
+  flow.heatmapFrames = []; flow.lastHeatSample = 0;
+  flow.wallAges = new Map(); flow.wallCount = {bid:0,ask:0};
+  flow.lastWhale = 0; flow.lastSweep = 0; flow.lastAbsorb = 0; flow.lastBurst = 0;
+  flow.depthReady = false; flow.depthSynced = false; flow.depthLastUpdate = 0; flow.depthBuffer = [];
+  stopDepthWs();
+  queueFlowRender(); redrawMarkers(); markOverlayDirty();
+}
+function stopDepthWs(){
+  clearTimeout(flow.depthTimer);
+  if (flow.depthWs){ try{ flow.depthWs.close(); }catch(e){} flow.depthWs = null; }
+  flow.depthReady = false; flow.depthSynced = false;
+}
+function depthTickSize(){
+  const ts = S.tickSize[S.symbol] || 0.01;
+  return Math.max(Number.EPSILON, ts * WALL_TICK_GROUP);
+}
+function wallKey(price, side){
+  const step = depthTickSize();
+  return S.symbol + '|' + side + '|' + Math.round(price / step);
+}
+function showSyncBadge(show){
+  const el = $('sync-badge');
+  if (el) el.style.display = show ? 'block' : 'none';
+}
+function pruneFlow(){
+  const cutoff = Date.now() - 10*60*1000;
+  while (flow.trades.length && flow.trades[0].ts < cutoff) flow.trades.shift();
+  while (flow.liqs.length && flow.liqs[0].ts < cutoff) flow.liqs.shift();
+  if (flow.trades.length > 8000) flow.trades.splice(0, flow.trades.length - 8000);
+  if (flow.liqs.length > 500) flow.liqs.splice(0, flow.liqs.length - 500);
+}
+function onAggTrade(d){
+  const ts = +d.T || +d.E || Date.now();
+  const price = +d.p, qty = +d.q;
+  if (!Number.isFinite(price) || !Number.isFinite(qty) || price <= 0 || qty <= 0) return;
+  const notional = price * qty;
+  const isSell = !!d.m;
+  const delta = isSell ? -notional : notional;
+  flow.cvd += delta;
+  flow.lastTradeTs = ts;
+  flow.trades.push({ts, price, delta, notional, side:isSell?'sell':'buy'});
+  pruneFlow();
+  // Whale & order-flow detection
+  if (S.settings.whaleAlerts){
+    const wmin = whaleThresholdNotional();
+    if (notional >= wmin && ts - flow.lastWhale > 2500){
+      flow.lastWhale = ts;
+      const side = isSell ? 'SELL' : 'BUY';
+      addFlowEvent('WHALE', notional >= wmin*2 ? 'high' : 'medium',
+        `Whale ${side} ${compact(notional)} @ ${fmtPrice(price)}`, isSell?'sell':'buy');
+      addWhaleMarker(price, isSell?'aboveBar':'belowBar', isSell?'var(--down)':'var(--up', `WHALE ${side} ${compact(notional)}`);
+    }
+    // Sweep: 1.8s window, >=4 trades same side, total >= wmin*1.8
+    detectSweep(ts, wmin);
+    // Absorption
+    detectAbsorption(ts, wmin);
+    // Delta burst
+    detectDeltaBurst(ts, wmin);
+  }
+  flowDirty = true;
+  queueFlowRender();
+}
+function addWhaleMarker(price, position, color, text){
+  const t = markerTime(Date.now());
+  flow.eventMarkers.push({time:t, position, color, shape:'circle', text});
+  if (flow.eventMarkers.length > 60) flow.eventMarkers.shift();
+  redrawMarkers();
+}
+function detectSweep(now, wmin){
+  if (now - flow.lastSweep < 6000) return;
+  const win = flow.trades.filter(t=>now-t.ts<1800);
+  for (const side of ['buy','sell']){
+    const same = win.filter(t=>t.side===side);
+    const total = same.reduce((a,t)=>a+t.notional,0);
+    if (total > wmin*1.8 && same.length >= 4){
+      flow.lastSweep = now;
+      addFlowEvent('SWEEP','high',`SWEEP ${side.toUpperCase()} ${compact(total)} / ${same.length} işlem`, side);
+      break;
+    }
+  }
+}
+function detectAbsorption(now, wmin){
+  if (now - flow.lastAbsorb < 12000 || flow.trades.length < 8) return;
+  const win = flow.trades.filter(t=>now-t.ts<10000);
+  if (win.length < 6) return;
+  const total = Math.abs(win.reduce((a,t)=>a+t.delta,0));
+  const first=win[0].price, last=win[win.length-1].price;
+  const move = first ? Math.abs(last-first)/first : 1;
+  if (total > wmin*2.2 && move < 0.00035){
+    flow.lastAbsorb = now;
+    addFlowEvent('ABSORPTION?','medium',`Absorpsiyon: delta ${compact(total)} ama fiyat yatay (${(move*100).toFixed(3)}%)`);
+  }
+}
+function detectDeltaBurst(now, wmin){
+  if (now - flow.lastBurst < 15000) return;
+  const sl = cvdSlope(60000);
+  if (Math.abs(sl) > wmin*2.5){
+    flow.lastBurst = now;
+    const side = sl > 0 ? 'BUY' : 'SELL';
+    addFlowEvent('DELTA BURST','high',`Delta burst ${side} ${compact(Math.abs(sl))}/dk`, side.toLowerCase());
+  }
+}
+function cvdSlope(windowMs = 180000){
+  const now = Date.now();
+  const recent = flow.trades.filter(t=>now-t.ts < windowMs);
+  if (recent.length < 2) return 0;
+  return (recent[recent.length-1].delta + flow.cvd - recent[0].delta - flow.cvd) / (windowMs/60000);
+}
+function addFlowEvent(type, sev, text, side){
+  const ev = {type, sev, text, ts:Date.now(), side};
+  flow.events.unshift(ev);
+  flow.events = flow.events.slice(0, 40);
+  renderFlowLog();
+  // Android bridge
+  try { if (window.Android && Android.flowEvent) Android.flowEvent(type, sev, text); } catch(_){}
+}
+function renderFlowLog(){
+  const el = $('flowLog');
+  if (!el) return;
+  if (!flow.events.length){
+    el.innerHTML = '<div style="color:var(--muted);font-size:12px">Veri akışı bekleniyor...</div>';
+    return;
+  }
+  el.innerHTML = flow.events.slice(0,12).map(ev => {
+    const cls = ev.sev==='high'?'neg':ev.sev==='medium'?'warn':'pos';
+    const time = new Date(ev.ts).toLocaleTimeString('tr-TR',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+    return `<div style="padding:6px 0;border-top:1px solid var(--border);font-size:12px">` +
+      `<span class="${cls}" style="font-weight:800">${ev.type}</span> ` +
+      `<span style="color:var(--muted);font-size:11px">${time}</span><br>` +
+      `<span style="color:var(--text)">${escapeHtml(ev.text)}</span></div>`;
+  }).join('');
+}
+/* ===== Heatmap sampling/drawing ===== */
+function heatmapSample(force){
+  if (!S.settings.showHeatmap || !flow.depthReady) return;
+  const now = Date.now();
+  if (!force && now - flow.lastHeatSample < HEAT_SAMPLE_MS) return;
+  flow.lastHeatSample = now;
+  const step = depthTickSize();
+  const mid = flow.bestAsk && flow.bestBid ? (flow.bestBid+flow.bestAsk)/2 : 0;
+  if (!mid) return;
+  const byKey = new Map();
+  const add = (side, p, q) => {
+    const k = side+'|'+Math.round(p/step), price=Math.round(p/step)*step, n=p*q;
+    if (n <= 0) return;
+    const old = byKey.get(k);
+    if (old){ old.notional += n; old.price = (old.price + price)/2; }
+    else byKey.set(k,{side,price,notional:n});
+  };
+  for (const [p,q] of flow.bidsBook){ if (Math.abs(p-mid)/mid < 0.01) add('B',p,q); }
+  for (const [p,q] of flow.asksBook){ if (Math.abs(p-mid)/mid < 0.01) add('A',p,q); }
+  let bins = [...byKey.values()];
+  if (!bins.length) return;
+  bins.sort((a,b)=>b.notional-a.notional);
+  const max = bins[0].notional, cut = max*0.035;
+  bins = bins.filter(b=>b.notional>=cut).slice(0, HEAT_MAX_BINS);
+  flow.heatmapFrames.push({t:Math.floor(now/1000), bins, max});
+  const minT = Math.floor(now/1000) - HEAT_WINDOW_SEC;
+  while (flow.heatmapFrames.length && flow.heatmapFrames[0].t < minT) flow.heatmapFrames.shift();
+}
+function drawHeatmap(){
+  if (!ctxH || !candleSeries || !chart) return;
+  const dpr = window.devicePixelRatio||1;
+  const w = heatCv.clientWidth, h = heatCv.clientHeight;
+  heatCv.width = w*dpr; heatCv.height = h*dpr;
+  ctxH.setTransform(dpr,0,0,dpr,0,0);
+  ctxH.clearRect(0,0,w,h);
+  if (!S.settings.showHeatmap || !flow.heatmapFrames.length || !flow.depthReady) return;
+  const axisW = Math.max(0, Math.ceil(chart.priceScale('right').width?.()||88));
+  const chartRight = Math.max(0, w - axisW);
+  const ts = chart.timeScale(), step = intervalSec(), nowT = Math.floor(Date.now()/1000);
+  const timeToX = t => {
+    let x = ts.timeToCoordinate(t);
+    if (x != null) return x;
+    const a = S.candles.at(-2), b = S.candles.at(-1);
+    if (!a || !b) return null;
+    const ax = ts.timeToCoordinate(a.time), bx = ts.timeToCoordinate(b.time);
+    if (ax==null||bx==null) return null;
+    return bx + ((t-b.time)/step)*((bx-ax)/Math.max(1,(b.time-a.time)/step));
+  };
+  for (let i=0;i<flow.heatmapFrames.length;i++){
+    const f = flow.heatmapFrames[i];
+    const x = timeToX(f.t); if (x==null||x>chartRight||x<-80) continue;
+    let x2 = i<flow.heatmapFrames.length-1 ? timeToX(flow.heatmapFrames[i+1].t) : timeToX(nowT);
+    if (x2==null) x2 = x+2;
+    const colW = Math.max(1, Math.min(18, Math.abs(x2-x)+1));
+    for (const b of f.bins){
+      const y = candleSeries.priceToCoordinate(b.price);
+      if (y==null||y<-4||y>h+4) continue;
+      const power = Math.log1p(b.notional)/Math.log1p(f.max||b.notional);
+      const a = Math.min(.42, .035+power*.28);
+      const hh = Math.max(2, Math.min(7, colW*0.65));
+      ctxH.fillStyle = b.side==='B'
+        ? `rgba(38,166,154,${a.toFixed(3)})`
+        : `rgba(239,83,80,${a.toFixed(3)})`;
+      ctxH.fillRect(Math.max(0,x), y-hh/2, Math.min(colW, chartRight-Math.max(0,x)), hh);
+    }
+  }
+}
+/* ===== DOM Ladder overlay drawing ===== */
+function drawDepthOverlay(){
+  if (!ctxO || !candleSeries || !chart) return;
+  const dpr = window.devicePixelRatio||1;
+  const w = overlayCv.clientWidth, h = overlayCv.clientHeight;
+  overlayCv.width = w*dpr; overlayCv.height = h*dpr;
+  ctxO.setTransform(dpr,0,0,dpr,0,0);
+  ctxO.clearRect(0,0,w,h);
+  if (!flow.depthReady) return;
+  const axisW = Math.max(0, Math.ceil(chart.priceScale('right').width?.()||88));
+  const chartRight = Math.max(0, w - axisW);
+  const showLadder = S.settings.showLadder;
+  const ladderW = showLadder ? Math.min(72, Math.max(28, LADDER_DEFAULT_W)) : 0;
+  const ladderX = Math.max(0, chartRight - ladderW);
+  const effLadderW = Math.max(0, chartRight - ladderX);
+  const rayEnd = Math.max(8, ladderX - 8);
+  const rayLeft = Math.max(0, Math.min(rayEnd-18, rayEnd-92));
+  const raySpan = Math.max(1, rayEnd - rayLeft);
+  const rows = Math.ceil(h / DEPTH_BIN_PX);
+  if (rows <= 0 || chartRight <= 0) return;
+  const pTop = candleSeries.coordinateToPrice(0), pBot = candleSeries.coordinateToPrice(h);
+  const bidBins = new Float64Array(rows), askBins = new Float64Array(rows);
+  const priceToRow = p => {
+    const y = candleSeries.priceToCoordinate(p);
+    if (y==null || y<0 || y>h) return -1;
+    return Math.min(rows-1, Math.max(0, Math.floor(y/DEPTH_BIN_PX)));
+  };
+  for (const [p,q] of flow.bidsBook){ const i = priceToRow(p); if (i>=0) bidBins[i] += p*q; }
+  for (const [p,q] of flow.asksBook){ const i = priceToRow(p); if (i>=0) askBins[i] += p*q; }
+  let maxN=0, nz=[];
+  for (let i=0;i<rows;i++){ const v = Math.max(bidBins[i], askBins[i]); if (v>0){ nz.push(v); if (v>maxN) maxN = v; } }
+  if (maxN === 0) return;
+  const pct = (+S.settings.wallPct||90)/100;
+  const vals = nz.slice().sort((a,b)=>a-b);
+  const pIdx = Math.floor(vals.length*pct);
+  const threshold = vals[Math.min(vals.length-1, pIdx)] || 0;
+  const logMax = Math.log1p(maxN);
+  const now = Date.now();
+  const blocked = [[8,26]]; // status pill + sync badge area
+  // Ladder fill
+  if (showLadder && effLadderW >= 16){
+    for (let i=0;i<rows;i++){
+      const isBid = bidBins[i] >= askBins[i], notional = isBid?bidBins[i]:askBins[i];
+      if (notional<=0) continue;
+      const y = i*DEPTH_BIN_PX, intensity = Math.log1p(notional)/logMax;
+      ctxO.fillStyle = isBid
+        ? `rgba(38,166,154,${(0.05+intensity*.55).toFixed(2)})`
+        : `rgba(239,83,80,${(0.05+intensity*.55).toFixed(2)})`;
+      ctxO.fillRect(ladderX, y, Math.min(effLadderW, effLadderW*intensity), DEPTH_BIN_PX);
+    }
+  }
+  // Wall detection/ray drawing
+  let i = 0; const walls = [];
+  while(i<rows){
+    const b=bidBins[i],a=askBins[i], side = b>=a?'B':'A', v = side==='B'?b:a;
+    if (v < threshold || v<=0){ i++; continue; }
+    let start=i, end=i, sum=0, wy=0, peak=0, dom=side;
+    while(end<rows){
+      const bb=bidBins[end],aa=askBins[end],s=bb>=aa?'B':'A',nv=s==='B'?bb:aa;
+      if (s!==dom || nv<threshold || nv<=0) break;
+      const yy=end*DEPTH_BIN_PX+DEPTH_BIN_PX/2; sum+=nv; wy+=yy*nv;
+      peak = Math.max(peak, nv);
+      end++;
+    }
+    const y = sum?wy/sum:start*DEPTH_BIN_PX+DEPTH_BIN_PX/2;
+    let price = candleSeries.coordinateToPrice(y);
+    if (price == null && pTop != null){ price = pTop - y*((pTop-pBot)/h); }
+    walls.push({side, start, end:end-1, y, price, notional:sum});
+    i=end;
+  }
+  const labeled = [];
+  const maxLabels = 10;
+  walls.sort((a,b)=>b.notional-a.notional).slice(0,maxLabels).forEach(w=>{
+    if (labeled.some(y=>Math.abs(y-w.y)<12)) return;
+    const rgb = w.side==='B'?'38,166,154':'239,83,80';
+    const intensity = Math.log1p(w.notional)/logMax;
+    const k = wallKey(w.price, w.side);
+    const rec = flow.wallAges.get(k);
+    const established = rec && now - rec.born > WALL_MIN_AGE;
+    const alpha = Math.min(1, (established?.38:.18) + intensity*.34);
+    const y0 = w.start*DEPTH_BIN_PX, hh = (w.end-w.start+1)*DEPTH_BIN_PX;
+    const grad = ctxO.createLinearGradient(rayLeft,y0,rayEnd,y0);
+    grad.addColorStop(0,`rgba(${rgb},0)`);
+    grad.addColorStop(.55,`rgba(${rgb},${(alpha*.3).toFixed(2)})`);
+    grad.addColorStop(1,`rgba(${rgb},${alpha.toFixed(2)})`);
+    ctxO.fillStyle = grad; ctxO.fillRect(rayLeft,y0,raySpan,hh);
+    const label = compact(w.notional) + (established?' ⏱':'');
+    ctxO.font=(established?'bold ':'')+'9px monospace'; ctxO.textAlign='right';
+    let placed = w.y+3;
+    let tries=0;
+    while(tries<7 && (labeled.some(y=>Math.abs(y-placed)<12) || blocked.some(([a,b])=>placed>=a&&placed<=b))){ placed += 12; tries++; }
+    if (placed < h-6){
+      ctxO.fillStyle='rgba(22,27,34,.86)';
+      const tw = ctxO.measureText(label).width;
+      ctxO.fillRect(Math.max(rayLeft, rayEnd-tw-4), placed-9, Math.min(tw+8, raySpan), 11);
+      ctxO.fillStyle = w.side==='B'?'#26a69a':'#ef5350';
+      ctxO.fillText(label, rayEnd, placed);
+      labeled.push(placed);
+    }
+  });
+  // Mid line & spread zone
+  if (flow.bestBid && flow.bestAsk && isFinite(flow.bestAsk)){
+    const mid = (flow.bestBid+flow.bestAsk)/2;
+    const my = candleSeries.priceToCoordinate(mid), by = candleSeries.priceToCoordinate(flow.bestBid), ay = candleSeries.priceToCoordinate(flow.bestAsk);
+    if (by!=null && ay!=null){
+      ctxO.fillStyle='rgba(76,140,224,.08)';
+      ctxO.fillRect(rayLeft, Math.min(by,ay), raySpan, Math.max(1,Math.abs(by-ay)));
+    }
+    if (my!=null && my>=0 && my<=h){
+      ctxO.save(); ctxO.setLineDash([5,5]); ctxO.strokeStyle='rgba(255,255,255,.38)'; ctxO.lineWidth=1;
+      ctxO.beginPath(); ctxO.moveTo(rayLeft,my); ctxO.lineTo(rayEnd,my); ctxO.stroke(); ctxO.setLineDash([]);
+      ctxO.font='800 9px monospace'; ctxO.textAlign='right'; ctxO.fillStyle='rgba(255,255,255,.9)';
+      ctxO.fillText('MID', rayEnd-2, Math.max(10,Math.min(h-3,my-3)));
+      ctxO.restore();
+    }
+    // last price dashed
+    const last = latestTradePrice || S.candles.at(-1)?.close;
+    if (last){
+      const py = candleSeries.priceToCoordinate(last);
+      if (py!=null && py>=0 && py<=h){
+        const up = last > mid;
+        ctxO.save(); ctxO.setLineDash([2,4]);
+        ctxO.strokeStyle = up ? 'rgba(38,166,154,.45)' : 'rgba(239,83,80,.45)';
+        ctxO.beginPath(); ctxO.moveTo(Math.max(rayLeft, rayEnd-28), py); ctxO.lineTo(rayEnd, py); ctxO.stroke();
+        ctxO.restore();
+      }
+    }
+  }
+}
+let latestTradePrice = null;
+let flowDirty = false, overlayDirty = false;
+function markOverlayDirty(){ overlayDirty = true; }
+function renderOverlayFrame(){
+  if (overlayDirty){
+    overlayDirty = false;
+    drawHeatmap();
+    drawDepthOverlay();
+  }
+  requestAnimationFrame(renderOverlayFrame);
+}
+requestAnimationFrame(renderOverlayFrame);
+function onDepth(d){
+  let bid = 0, ask = 0;
+  (d.b || []).slice(0,20).forEach(x => { bid += (+x[0] || 0) * (+x[1] || 0); });
+  (d.a || []).slice(0,20).forEach(x => { ask += (+x[0] || 0) * (+x[1] || 0); });
+  flow.bidVol = bid; flow.askVol = ask;
+  flow.obi = (bid + ask) > 0 ? (bid - ask) / (bid + ask) : 0;
+  flow.lastDepthTs = +d.E || Date.now();
+  queueFlowRender();
+}
+function onMarkPrice(d){
+  const fr = +d.r, mp = +d.p;
+  if (Number.isFinite(fr)) flow.funding = fr;
+  if (Number.isFinite(mp)) flow.markPrice = mp;
+  if (d.T) flow.nextFunding = +d.T;
+  flow.lastMarkTs = +d.E || Date.now();
+  queueFlowRender();
+}
+function onForceOrder(d){
+  const o = d.o || {};
+  if (o.s && o.s !== S.symbol) return;
+  const ts = +o.T || +d.E || Date.now();
+  const price = +(o.ap || o.p), qty = +(o.z || o.q);
+  if (!Number.isFinite(price) || !Number.isFinite(qty) || price <= 0 || qty <= 0) return;
+  const notional = price * qty;
+  const side = o.S; // SELL: long liquidation, BUY: short liquidation
+  const type = side === "SELL" ? "LONG_LIQ" : "SHORT_LIQ";
+  flow.liqs.push({ts, price, qty, notional, side, type});
+  if (S.settings.showLiq && notional >= (+S.settings.liqMin || 0)){
+    flow.markers.push({
+      time: markerTime(ts),
+      position: side === "SELL" ? "aboveBar" : "belowBar",
+      color: side === "SELL" ? "#ff8a80" : "#69f0ae",
+      shape: "circle",
+      text: `${side === "SELL" ? "Long" : "Short"} liq ${compact(notional)}`
+    });
+    if (flow.markers.length > 80) flow.markers.shift();
+    redrawMarkers();
+  }
+  pruneFlow(); queueFlowRender();
+}
+function markerTime(tsMs){
+  if (!S.candles.length) return Math.floor(tsMs/1000);
+  const sec = Math.floor(tsMs/1000);
+  for (let i=S.candles.length-1; i>=Math.max(0, S.candles.length-10); i--){
+    if (sec >= S.candles[i].time) return S.candles[i].time;
+  }
+  return S.candles[S.candles.length-1].time;
+}
+let flowRaf = false;
+function queueFlowRender(){
+  if (flowRaf) return;
+  flowRaf = true;
+  requestAnimationFrame(() => { flowRaf = false; renderFlowMini(); });
+}
+function sumTrades(maxAge, minAge=0){
+  const now = Date.now(); let delta = 0, notional = 0;
+  for (let i=flow.trades.length-1; i>=0; i--){
+    const age = now - flow.trades[i].ts;
+    if (age > maxAge) break;
+    if (age >= minAge){ delta += flow.trades[i].delta; notional += flow.trades[i].notional; }
+  }
+  return {delta, notional};
+}
+function sumLiqs(maxAge){
+  const now = Date.now(); let longLiq=0, shortLiq=0;
+  for (let i=flow.liqs.length-1; i>=0; i--){
+    const age = now - flow.liqs[i].ts;
+    if (age > maxAge) break;
+    if (flow.liqs[i].type === "LONG_LIQ") longLiq += flow.liqs[i].notional;
+    else shortLiq += flow.liqs[i].notional;
+  }
+  return {longLiq, shortLiq};
+}
+function rangeStats(idx){
+  const cs = S.candles; if (cs.length < 25) return {rangePct:0, atrPct:0, tight:false, change5:0};
+  const i = Math.min(idx ?? cs.length-1, cs.length-1);
+  const start = Math.max(0, i-19);
+  const win = cs.slice(start, i+1);
+  const hi = Math.max(...win.map(c=>c.high)), lo = Math.min(...win.map(c=>c.low));
+  const last = cs[i].close;
+  const rangePct = last ? (hi - lo) / last : 0;
+  const atrPct = win.reduce((a,c)=>a + ((c.high-c.low)/c.close), 0) / win.length;
+  const baseIdx = Math.max(0, i-5);
+  const change5 = cs[baseIdx].close ? (cs[i].close - cs[baseIdx].close) / cs[baseIdx].close : 0;
+  return {rangePct, atrPct, tight: rangePct > 0 && (rangePct < 0.006 || atrPct < 0.0012), change5};
+}
+function flowSnapshot(idx){
+  const t60 = sumTrades(60000);
+  const tPrev = sumTrades(180000, 60000);
+  const t30 = sumTrades(30000);
+  const tPrev150 = sumTrades(150000, 30000);
+  const liq60 = sumLiqs(60000);
+  const rs = rangeStats(idx);
+  const cvdBias = t60.notional ? t60.delta / t60.notional : 0;
+  const prevBias = tPrev.notional ? tPrev.delta / tPrev.notional : 0;
+  const prevPer30 = tPrev150.notional / 4;
+  const takerSpike = t30.notional > Math.max(10000, prevPer30 * 1.8);
+  const cascadeThr = clamp((+S.settings.cascadePct || 0.8) / 100, 0.001, 0.10);
+  return {
+    cvd60:t60.delta, notional60:t60.notional, cvdBias, cvdSlope:cvdBias - prevBias,
+    obi:flow.obi, bidVol:flow.bidVol, askVol:flow.askVol,
+    longLiq60:liq60.longLiq, shortLiq60:liq60.shortLiq,
+    oi:flow.oi, oiChangePct:flow.oiChangePct || 0, funding:flow.funding,
+    taker30:t30.notional, takerSpike,
+    rangePct:rs.rangePct, atrPct:rs.atrPct, tightRange:rs.tight,
+    change5:rs.change5, cascadeDown:rs.change5 < -cascadeThr || liq60.longLiq > (+S.settings.liqMin || 0) * 2,
+    cascadeUp:rs.change5 > cascadeThr || liq60.shortLiq > (+S.settings.liqMin || 0) * 2
+  };
+}
+/* ================= 5. INDICATORS ================= */
+function sma(arr, p){
+  const out = new Array(arr.length).fill(null);
+  let sum = 0;
+  for (let i=0;i<arr.length;i++){
+    sum += arr[i];
+    if (i >= p) sum -= arr[i-p];
+    if (i >= p-1) out[i] = sum/p;
+  }
+  return out;
+}
+function psar(cs, step, max){
+  const n = cs.length, sar = new Array(n).fill(null), trend = new Array(n).fill(null);
+  if (n < 3) return {sar, trend};
+  let up = cs[1].close >= cs[0].close;
+  let s = up ? Math.min(cs[0].low, cs[1].low) : Math.max(cs[0].high, cs[1].high);
+  let ep = up ? cs[1].high : cs[1].low;
+  let af = step;
+  for (let i=2;i<n;i++){
+    s = s + af*(ep - s);
+    if (up) s = Math.min(s, cs[i-1].low, cs[i-2].low);
+    else    s = Math.max(s, cs[i-1].high, cs[i-2].high);
+    if (up && cs[i].low < s){ up=false; s=ep; ep=cs[i].low; af=step; }
+    else if (!up && cs[i].high > s){ up=true; s=ep; ep=cs[i].high; af=step; }
+    else {
+      if (up && cs[i].high > ep){ ep=cs[i].high; af=Math.min(af+step, max); }
+      if (!up && cs[i].low < ep){ ep=cs[i].low; af=Math.min(af+step, max); }
+    }
+    sar[i] = s; trend[i] = up ? 1 : -1;
+  }
+  return {sar, trend};
+}
+
+function bollinger(cs, period, mult){
+  const closes = cs.map(c => c.close);
+  const mid = sma(closes, period);
+  const upper = new Array(cs.length).fill(null), lower = new Array(cs.length).fill(null);
+  for (let i=period-1;i<cs.length;i++){
+    const m = mid[i];
+    let ss = 0;
+    for (let j=i-period+1;j<=i;j++) ss += Math.pow(closes[j]-m, 2);
+    const sd = Math.sqrt(ss/period);
+    upper[i] = m + mult*sd;
+    lower[i] = m - mult*sd;
+  }
+  return {upper, mid, lower};
+}
+function emaSeries(arr, period){
+  const out = new Array(arr.length).fill(null);
+  const k = 2/(period+1);
+  let sum = 0, count = 0, prev = null;
+  for (let i=0;i<arr.length;i++){
+    const v = arr[i];
+    if (v == null || !Number.isFinite(v)){ out[i] = null; continue; }
+    if (prev == null){
+      sum += v; count++;
+      if (count === period){ prev = sum/period; out[i] = prev; }
+    } else {
+      prev = v*k + prev*(1-k);
+      out[i] = prev;
+    }
+  }
+  return out;
+}
+function rsiSeriesCalc(closes, period){
+  const out = new Array(closes.length).fill(null);
+  if (closes.length <= period) return out;
+  let gain = 0, loss = 0;
+  for (let i=1;i<=period;i++){
+    const ch = closes[i] - closes[i-1];
+    if (ch >= 0) gain += ch; else loss -= ch;
+  }
+  let avgGain = gain/period, avgLoss = loss/period;
+  out[period] = avgLoss === 0 ? 100 : 100 - 100/(1 + avgGain/avgLoss);
+  for (let i=period+1;i<closes.length;i++){
+    const ch = closes[i] - closes[i-1];
+    const g = ch > 0 ? ch : 0, l = ch < 0 ? -ch : 0;
+    avgGain = (avgGain*(period-1) + g)/period;
+    avgLoss = (avgLoss*(period-1) + l)/period;
+    out[i] = avgLoss === 0 ? 100 : 100 - 100/(1 + avgGain/avgLoss);
+  }
+  return out;
+}
+function macdCalc(closes, fast, slow, signal){
+  if (fast >= slow) slow = fast + 1;
+  const ef = emaSeries(closes, fast), es = emaSeries(closes, slow);
+  const line = closes.map((_,i) => ef[i]==null || es[i]==null ? null : ef[i]-es[i]);
+  const sig = emaSeries(line, signal);
+  const hist = line.map((v,i) => v==null || sig[i]==null ? null : v - sig[i]);
+  return {line, signal:sig, hist};
+}
+function vwapCalc(cs){
+  const out = new Array(cs.length).fill(null);
+  let day = "", pv = 0, vol = 0;
+  for (let i=0;i<cs.length;i++){
+    const d = new Date(cs[i].time*1000).toISOString().slice(0,10);
+    if (d !== day){ day = d; pv = 0; vol = 0; }
+    const typ = (cs[i].high + cs[i].low + cs[i].close) / 3;
+    pv += typ * cs[i].volume;
+    vol += cs[i].volume;
+    out[i] = vol ? pv/vol : null;
+  }
+  return out;
+}
+function lineData(cs, values){
+  return cs.map((c,i) => values[i]==null?null:{time:c.time,value:values[i]}).filter(Boolean);
+}
+/* ================= 6. KATMAN 1 — MA/SAR TETİKLEYİCİ ================= */
+function runEngine(){
+  // Kapanmış mumlar üzerinde çalış (son eleman kapanmışsa dahil — onKline k.x sonrası çağrılır)
+  const cs = S.candles;
+  if (cs.length < S.settings.ma3 + 5) return;
+  const ctx = patternContext(cs);
+  const i = cs.length - 1;
+  const ma1 = ctx.ma[Math.max(2,Math.round(+S.settings.ma1||9))];
+  const ma2 = ctx.ma[Math.max(3,Math.round(+S.settings.ma2||21))];
+  const ma3 = ctx.ma[Math.max(5,Math.round(+S.settings.ma3||50))];
+  if (!ma1 || !ma2 || !ma3 || ma1[i]==null || ma2[i-1]==null || ma3[i]==null || ctx.trend[i]==null) return;
+  const primaryPair = `${Math.max(2,Math.round(+S.settings.ma1||9))}x${Math.max(3,Math.round(+S.settings.ma2||21))}`;
+  const crosses = patternCrossesAt(ctx, i);
+  const flipUp   = ctx.trend[i-1] === -1 && ctx.trend[i] === 1;   // SAR üstten alta → boğa
+  const flipDown = ctx.trend[i-1] === 1  && ctx.trend[i] === -1;  // SAR alttan üste → ayı
+
+  // Yeni cross'ları genel bekleme listesine ekle (diğer MA çiftleri + F0/F1 filtreleri için)
+  crosses.forEach(cr => {
+    const dup = engine.pendingMulti.some(p => p.pair===cr.pair && p.dir===cr.dir && p.idx===i);
+    if (!dup) engine.pendingMulti.push({ pair:cr.pair, dir:cr.dir, filter:cr.filter, idx:i });
+  });
+
+  // --- Birincil kural (MA1×MA2, F1) — geriye dönük davranış/UI mesajları korunuyor ---
+  const primaryCross = crosses.find(cr => cr.pair === primaryPair);
+  if (primaryCross) engine.pending = { dir: primaryCross.dir==="UP"?"AL":"SAT", idx:i, flip:false };
+  let primaryFired = false;
+  if (engine.pending){
+    const p = engine.pending;
+    const elapsed = i - p.idx;
+    if (elapsed > S.settings.nWindow){
+      engine.pending = null;
+      setStatus("NOTR", "Pencere doldu, tetikleyici iptal.");
+    } else {
+      if ((p.dir==="AL" && flipUp) || (p.dir==="SAT" && flipDown)) p.flip = true;
+      if (p.flip){
+        const ok = p.dir==="AL"
+          ? (ma2[i] > ma3[i] || ctx.closes[i] > ma3[i])
+          : (ma2[i] < ma3[i] || ctx.closes[i] < ma3[i]);
+        if (ok){ fireSignal(p.dir, i, elapsed); engine.pending = null; primaryFired = true; }
+        else setStatus("IZLEMEDE", `${p.dir} kurgusu: cross + SAR flip var, MA${S.settings.ma3} filtresi bekleniyor.`);
+      } else {
+        setStatus("IZLEMEDE", `${p.dir==="AL"?"Golden":"Death"} cross oluştu, SAR flip bekleniyor (${elapsed}/${S.settings.nWindow} mum).`);
+      }
+    }
+  }
+  // Cross'suz SAR flip → erken uyarı (sinyal DEĞİL)
+  if (!engine.pending && !primaryFired && (flipUp || flipDown)){
+    setStatus(engine.status === "AL" || engine.status === "SAT" ? engine.status : "NOTR",
+      `Erken uyarı: SAR ${flipUp?"boğa":"ayı"} yönüne flip etti, MA cross yok — sinyal sayılmaz.`);
+  }
+
+  // --- Havuz-onaylı genel patern taraması: diğer MA çiftleri + F0 filtreler dahil ---
+  processExtraPatterns(ctx, i, primaryPair);
+}
+// Birincil kuralın kapsamadığı paternleri (MA1×MA3, MA2×MA3, F0 filtreler vb.) tarar;
+// yalnızca havuzda yeterli örnek (n≥15) ve güvenilir Wilson skoru (≥%50) varsa tetikler.
+function processExtraPatterns(ctx, i, primaryPair){
+  const stillPending = [];
+  engine.pendingMulti.forEach(p => {
+    if (p.pair === primaryPair && p.filter === "F1") return; // birincil akış zaten işliyor
+    const elapsed = i - p.idx;
+    if (elapsed > 4) return; // pencere doldu (havuzdaki SARX üst sınırı), düş
+    const sar = patternResolveSar(ctx, p.idx, p.dir, i);
+    if (sar){
+      const patId = patternId(p.pair, p.dir, sar.bucket, p.filter);
+      tryFireExtraPattern(p, patId, sar.finalIndex, sar.finalIndex - p.idx);
+      return; // çözüldü (tetiklendi ya da elendi), listeden düş
+    }
+    stillPending.push(p);
+  });
+  engine.pendingMulti = stillPending;
+}
+async function tryFireExtraPattern(p, patId, idx, elapsed){
+  try{
+    const stats = await patternGetStats(`${S.interval}:${patId}`);
+    if (!stats || stats.n < 15 || stats.wilsonLower < 50) return;
+    const c = S.candles[idx]; if (!c) return;
+    if (engine.log[0] && engine.log[0].ts === c.time) return; // aynı mumda zaten sinyal verildi
+    const dir = p.dir === "UP" ? "AL" : "SAT";
+    const pairLabel = `MA${p.pair.replace("x","×MA")}`;
+    const ruleLabel = `${pairLabel} ${p.dir==="UP"?"golden":"death"} cross + SAR flip (${elapsed} mum) — havuz onaylı patern (${stats.wilsonLower.toFixed(0)}% Wilson, n=${stats.n})`;
+    fireSignal(dir, idx, elapsed, { patId, ruleLabel });
+  }catch(e){ /* sessiz */ }
+}
+async function fireSignal(dir, idx, elapsed, opts={}){
+  const c = S.candles[idx];
+  const rule = opts.ruleLabel || `MA${S.settings.ma1}×MA${S.settings.ma2} ${dir==="AL"?"golden":"death"} cross + SAR flip (${elapsed} mum sonra) + MA${S.settings.ma3} filtresi`;
+  // --- Pattern Pool Score (A+B) ---
+  let poolScore = null, poolGrade = null, poolReasons = [];
+  const histPattern = opts.patId || patternSignalId(dir, idx, elapsed);
+  if (histPattern) {
+    try {
+      const stats = await patternGetStats(`${S.interval}:${histPattern}`);
+      if (stats && stats.n >= 15) {
+        let pScore = 55;
+        if (stats.wilsonLower >= 50) { pScore += 14; poolReasons.push(`Havuz güvenilir (${stats.wilsonLower.toFixed(0)}% Wilson)`); }
+        else if (stats.wilsonLower < 42) { pScore -= 8; poolReasons.push(`Havuz zayıf (${stats.wilsonLower.toFixed(0)}% Wilson)`); }
+        else { pScore += 4; poolReasons.push(`Havuz orta (${stats.wilsonLower.toFixed(0)}% Wilson)`); }
+        if (stats.avgRet10 > 0.8) { pScore += 8; poolReasons.push(`Ret10 güçlü (+${stats.avgRet10.toFixed(1)}%)`); }
+        else if (stats.avgRet10 < 0) { pScore -= 8; poolReasons.push(`Ret10 negatif (${stats.avgRet10.toFixed(1)}%)`); }
+        const rMult = stats.avgMfe20 / (stats.avgMae20 || 1);
+        if (rMult > 1.2) { pScore += 6; poolReasons.push(`MFE/MAE dengeli (${rMult.toFixed(1)})`); }
+        else if (rMult < 0.7) { pScore -= 6; poolReasons.push(`MFE/MAE zayıf (${rMult.toFixed(1)})`); }
+        poolScore = Math.round(clamp(pScore, 0, 100));
+        poolGrade = poolScore >= 75 ? "YÜKSEK" : poolScore >= 60 ? "ORTA+" : poolScore >= 45 ? "ORTA" : "ZAYIF";
+      }
+    } catch(e){ /* sessiz */ }
+  }
+  const raw = evaluateRawFlow(dir, idx, poolScore, poolGrade, poolReasons);
+  setStatus(dir, rule, raw);
+  patternRenderSignalContext(histPattern, idx).catch(e => console.warn("pattern context hata", e));
+  patternRenderChartOverlay(histPattern, idx).catch(e => console.warn("pattern overlay hata", e));
+  engine.markers.push({
+    time: c.time, position: dir==="AL"?"belowBar":"aboveBar",
+    color: dir==="AL" ? "#26a69a" : "#ef5350",
+    shape: dir==="AL" ? "arrowUp" : "arrowDown", text: raw.score==null ? dir : `${dir} ${raw.score}`
+  });
+  if (engine.markers.length > 80) engine.markers.shift();
+  engine.log.unshift({ dir, rule, price: c.close, ts: c.time, score: raw.score, grade: raw.grade, reasons: raw.reasons, patternId: histPattern });
+  if (engine.log.length > 30) engine.log.pop();
+  renderSignalTab(); redrawMarkers();
+  // Android bridge: signal to native
+  try {
+    if (window.Android && Android.signal) {
+      Android.signal(dir, raw.score!=null?raw.score:0, String(c.close), rule);
+    }
+  } catch(_){}
+}
+function setStatus(st, text, raw=null){
+  engine.status = st; engine.statusText = text; engine.lastRaw = raw;
+  const cls = "st-" + (st==="IZLEMEDE" ? "IZLEMEDE" : st);
+  const pill = $("statusPill");
+  pill.className = ""; pill.classList.add(cls);
+  pill.textContent = st === "IZLEMEDE" ? "İZLEMEDE" : (st==="NOTR" ? "NÖTR" : st);
+  $("sigStatus").className = cls;
+  $("sigStatus").textContent = pill.textContent;
+  $("sigRule").textContent = text;
+  renderDecisionRaw(raw);
+  if (st !== "AL" && st !== "SAT"){ patternRenderSignalContext(null); patternRenderChartOverlay(null); }
+  $("commentBar").textContent = comment(st, raw);
+}
+/* ================= 7. KATMAN 2 — RAW FLOW CONFIRM/VETO ================= */
+function evaluateRawFlow(dir, idx, poolScore=null, poolGrade=null, poolReasons=[]){
+  if (!S.settings.rawConfirm){
+    return {score:null, grade:"HAM", summary:"Ham mod — raw flow confirm kapalı.", reasons:["Raw flow katmanı kapalı: MA/SAR tetikleyicisi direkt gösterildi."], metrics:flowSnapshot(idx)};
+  }
+  const s = flowSnapshot(idx);
+  let score = 55;
+  const reasons = [];
+  const hasCvd = s.notional60 > 0;
+  const hasDepth = (s.bidVol + s.askVol) > 0;
+  if (!hasCvd){ score -= 6; reasons.push("CVD veri ısınıyor; agresif alıcı/satıcı teyidi sınırlı."); }
+  if (!hasDepth){ score -= 6; reasons.push("OBI/depth veri bekleniyor; order book teyidi sınırlı."); }
+
+  if (dir === "SAT"){
+    if (s.cvdBias < -0.12){ score += 14; reasons.push("Breakdown confirm: CVD agresif satış tarafında."); }
+    else if (s.cvdBias < -0.03){ score += 7; reasons.push("CVD satışa eğimli, SAT yönünü destekliyor."); }
+    else if (s.cvdBias > 0.10){ score -= 12; reasons.push("CVD alıcı tarafta; SAT sinyali zayıfladı."); }
+
+    if (s.obi < -0.10){ score += 10; reasons.push("OBI ask ağırlıklı; satış duvarı baskın."); }
+    else if (s.obi > 0.10){ score -= 8; reasons.push("OBI bid tarafına dönmüş; SAT kovalamaya dikkat."); }
+  } else {
+    if (s.cascadeDown){
+      if (s.cvdBias > -0.05 || s.cvdSlope > 0){ score += 10; reasons.push("Fade confirm: satış baskısı tükeniyor, CVD toparlanıyor."); }
+      else { score -= 8; reasons.push("Dump sonrası AL ama CVD hâlâ satıcı; güven düştü."); }
+      if (s.obi > 0.08){ score += 10; reasons.push("OBI bid tarafına döndü; mean-reversion AL destekli."); }
+      else if (s.obi < -0.08){ score -= 8; reasons.push("OBI hâlâ ask baskılı; fade AL erken olabilir."); }
+    } else {
+      if (s.cvdBias > 0.08){ score += 10; reasons.push("CVD alıcı tarafta; AL yönü destekli."); }
+      else if (s.cvdBias < -0.10){ score -= 10; reasons.push("CVD satıcı tarafta; AL sinyali zayıfladı."); }
+      if (s.obi > 0.10){ score += 8; reasons.push("OBI bid ağırlıklı; alış tarafı order book'ta güçlü."); }
+      else if (s.obi < -0.10){ score -= 7; reasons.push("OBI ask ağırlıklı; AL için direnç var."); }
+    }
+  }
+
+  if (s.tightRange){
+    score -= 12;
+    reasons.push(`Range filtresi: bant dar (${(s.rangePct*100).toFixed(2)}%); MA/SAR whipsaw riski.`);
+  } else if (s.rangePct > 0){
+    score += 3;
+    reasons.push("Range yeterince açık; tetikleyici nefes alıyor.");
+  }
+
+  if (dir === "SAT" && s.longLiq60 >= (+S.settings.liqMin || 0) && s.takerSpike){
+    score += 12; reasons.push(`Liq-cluster confirm: ${compact(s.longLiq60)} long liq + taker spike.`);
+  }
+  if (dir === "AL" && s.shortLiq60 >= (+S.settings.liqMin || 0) && s.takerSpike){
+    score += 12; reasons.push(`Liq-cluster confirm: ${compact(s.shortLiq60)} short liq + taker spike.`);
+  }
+  if (dir === "SAT" && s.shortLiq60 > s.longLiq60*1.5 && s.shortLiq60 >= (+S.settings.liqMin || 0)){
+    score -= 5; reasons.push("Ters liq akışı: short liq yoğun; SAT için squeeze riski var.");
+  }
+  if (dir === "AL" && s.longLiq60 > s.shortLiq60*1.5 && s.longLiq60 >= (+S.settings.liqMin || 0)){
+    score -= 5; reasons.push("Ters liq akışı: long liq yoğun; AL için bıçak tutma riski var.");
+  }
+
+  if (s.oiChangePct < -0.25 && s.takerSpike){
+    score += dir === "SAT" ? 8 : 4;
+    reasons.push(`OI ${s.oiChangePct.toFixed(2)}% düştü + taker spike; pozisyon boşalması var.`);
+  } else if (s.oiChangePct > 0.25){
+    const sameSide = (dir === "SAT" && s.cvdBias < 0) || (dir === "AL" && s.cvdBias > 0);
+    score += sameSide ? 4 : -2;
+    reasons.push(`OI ${s.oiChangePct.toFixed(2)}% arttı; yeni pozisyon girişi izleniyor.`);
+  }
+
+  if (Number.isFinite(s.funding)){
+    if (s.funding > 0.00025 && dir === "SAT") { score += 8; reasons.push(`Funding pozitif kalabalık (${fundFmt(s.funding)}); long unwind/SAT lehine.`); }
+    else if (s.funding < -0.00025 && dir === "AL") { score += 8; reasons.push(`Funding negatif kalabalık (${fundFmt(s.funding)}); short squeeze/AL lehine.`); }
+    else if (s.funding > 0.00025 && dir === "AL") { score -= 5; reasons.push(`Funding pozitif kalabalık (${fundFmt(s.funding)}); AL tarafı crowded.`); }
+    else if (s.funding < -0.00025 && dir === "SAT") { score -= 5; reasons.push(`Funding negatif kalabalık (${fundFmt(s.funding)}); SAT tarafı crowded.`); }
+  }
+
+  const fresh = Math.max(flow.lastTradeTs || 0, flow.lastDepthTs || 0, flow.lastMarkTs || 0);
+  if (fresh && Date.now() - fresh > 15000){ score -= 8; reasons.push("Raw WS taze değil; skor temkinli hesaplandı."); }
+  if (!reasons.length) reasons.push("Raw flow nötr; sinyal ağırlığı MA/SAR çekirdeğinde.");
+
+  score = Math.round(clamp(score, 0, 100));
+  const grade = score >= 75 ? "YÜKSEK" : score >= 60 ? "ORTA+" : score >= 45 ? "ORTA" : "ZAYIF";
+  return {score, grade, summary:`${grade} güven — ${score}/100`, reasons, metrics:s};
+}
+function renderDecisionRaw(raw){
+  const scoreEl = $("sigScore"), fill = $("scoreFill"), conf = $("sigConf"), reasons = $("sigReasons");
+  if (!raw){
+    scoreEl.textContent = S.settings.rawConfirm ? "—" : "HAM";
+    fill.style.width = "0%"; fill.style.background = "var(--muted)";
+    conf.textContent = S.settings.rawConfirm ? "Raw flow açık — Katman 1 tetiklenince güven skoru üretilecek." : "Ham mod — raw flow confirm kapalı.";
+    reasons.innerHTML = "";
+    return;
+  }
+  if (raw.score == null){
+    scoreEl.textContent = "HAM";
+    fill.style.width = "0%"; fill.style.background = "var(--muted)";
+    conf.textContent = raw.summary;
+  } else {
+    scoreEl.textContent = `${raw.score}/100`;
+    fill.style.width = `${raw.score}%`;
+    fill.style.background = scoreColor(raw.score);
+    conf.textContent = `${raw.summary}. Raw flow sinyali iptal etmez; sadece güveni derecelendirir.`;
+  }
+  reasons.innerHTML = raw.reasons.slice(0,5).map(x => `<div class="reason">${escapeHtml(x)}</div>`).join("");
+}
+/* ================= 8. YORUM MOTORU — İstanbul Arka Sokak Jargonu ================= */
+const POOL = {
+  AL_HIGH: [
+    "Kanka yeşil minibüs durağa yanaştı; AL tarafında hem tabela hem akış aynı yere bakıyor.",
+    "Boğa Kadıköy vapuru gibi kalkmış; skor yüksek, ama yine de can simidi stopsuz binme.",
+    "Reis mahallede alıcılar davulu çalıyor; MA/SAR tamam, raw flow da arkadan itiyor.",
+    "Bu AL boş naradan değil; CVD/OBI de omuz vermiş, sokak şimdilik yukarı diyor.",
+    "Abi kurgu üçlü çay gibi demli: cross, SAR, flow. Frene basmayı unutma yeter.",
+    "Boğa kapıyı tekmelememiş, anahtarla açmış; güven yüksek, plan net olsun.",
+    "Alıcı tayfa sahaya inmiş kanka; skor güçlü, trade defterine temiz yazılır.",
+    "Sarıyer yokuşu değil, şimdilik asansör modu; AL güvenli görünüyor ama rehavet yok.",
+    "Flow arkadan selektör yakıyor: AL yolu açık, makas atma; kontrollü git.",
+    "Grafik 'ben yukarı giderim' diye imza atmış; raw flow da şahit olmuş."
+  ],
+  AL_MID: [
+    "AL var kanka ama mahalle tam ikna değil; poz küçük, göz büyük olsun.",
+    "Boğa kafayı uzattı, flow fena değil; yine de kapıyı açık bırakma.",
+    "Cross/SAR tamam, raw flow orta şeker; kahveyi iç ama falına fazla güvenme.",
+    "Yukarı niyet var reis; skor orta, stop cebinde dursun.",
+    "Alıcılar masada ama hesabı henüz ödemedi; sinyal var, temkin de var.",
+    "Bu AL 'olur gibi' diyor; İstanbul trafiği misali her an sıkışabilir.",
+    "Mahalle yukarı bakıyor ama herkes bağırmıyor; dozunda gir, abartma.",
+    "Boğa korna çaldı, konvoy küçük; güven orta, planlı git.",
+    "AL sinyali pişti ama altı kısık; aceleci olmayan kazanır.",
+    "Reis yeşil ışık yandı, ama kavşakta kamyon var; skoru ciddiye al."
+  ],
+  AL_LOW: [
+    "AL çıktı ama flow yan çiziyor kanka; bıçak mı, fırsat mı dikkat et.",
+    "Boğa ses verdi fakat sokak kalabalık değil; düşük güven, gaza abanma.",
+    "Grafik AL diyor, raw flow 'bir dakika abi' diyor; küçük oyna ya da izle.",
+    "Bu yeşil sinyalde sis var; stop yoksa mahalle karışır.",
+    "Alıcılar kapıyı çaldı ama içeriden ses az; güven zayıf, şov yapma.",
+    "Kanka bu AL çay ocağı dedikodusu gibi: var ama teyit zayıf.",
+    "Sinyal var, omuz zayıf; balıklama atlayan ıslanır.",
+    "Boğa tek başına gelmiş, ekip yok; düşük skorla kahramanlık yapma.",
+    "Yeşil ok geldi ama flow ters bakıyor; kontrollü değilsen pas geç.",
+    "AL tabelası asıldı, müşteri az; bu dükkâna küçük sermaye yakışır."
+  ],
+  SAT_HIGH: [
+    "Kanka ayı kepengi indirdi; SAT tarafında hem grafik hem flow aynı ağızdan konuşuyor.",
+    "Death cross boş gelmemiş; raw flow da aşağı mahalleye taşınmış.",
+    "Satıcılar Eminönü kalabalığı gibi bastı; skor yüksek, plan net olsun.",
+    "Ayı kapıda değil, salonda oturuyor reis; SAT güveni sağlam.",
+    "Bu SAT tabelası neon gibi yanıyor; CVD/OBI arkadan destek vermiş.",
+    "Grafik aşağı imza atmış, flow mührü basmış; stopsuz artistlik yok.",
+    "Kırılım devam kokuyor abi; satıcı tayfa direksiyonda.",
+    "Ayı yokuştan frensiz iniyor; yüksek güven ama risk kemeri takılı.",
+    "SAT kurgusu üçlü pres yaptı; alıcılar şimdilik köşeye sıkışmış.",
+    "Piyasa aşağıya adres sormuyor, yolu biliyor; skor güçlü."
+  ],
+  SAT_MID: [
+    "SAT var kanka, ama ayı da temkinli yürüyor; skoru orta oku.",
+    "Death cross tamam, flow fena değil; fazla artistlik yapmadan takip.",
+    "Aşağı niyet var reis; ama mahallede hâlâ karşı ses duyuluyor.",
+    "Satıcılar masaya oturdu, pazarlık bitmedi; orta güven.",
+    "Bu SAT 'olabilir' diyor; stopu kapının önüne koy.",
+    "Ayı korna çaldı ama konvoy kısa; pozisyonu da kısa tut.",
+    "Kırılım var, teyit yarım demli; aceleyle dükkân kapatma.",
+    "Aşağı sinyal pişti ama servis sıcak değil; kontrollü git.",
+    "Sokak biraz ayı biraz kararsız; skor orta, risk net olsun.",
+    "SAT oku geldi, flow orta şeker; kahramanlık değil disiplin zamanı."
+  ],
+  SAT_LOW: [
+    "SAT çıktı ama flow omuz vermiyor kanka; ayı tek başına kalmış olabilir.",
+    "Aşağı ok var, teyit zayıf; ters squeeze tokadına dikkat.",
+    "Grafik SAT diyor, raw flow 'dur hele' diyor; düşük güven.",
+    "Bu kırmızı sinyal biraz sisli; acele eden Bağcılar trafiğine kalır.",
+    "Satıcılar bağırdı ama kalabalık değil; skor zayıf, doz küçük.",
+    "Death cross geldi diye dükkânı yakma; flow teyidi ince.",
+    "Ayı kapıyı tıklattı, içeri girmedi; düşük skorla sakin kal.",
+    "SAT tabelası var ama elektrik titriyor; plan yoksa pas geç.",
+    "Aşağı niyet zayıf teyitli; ters rüzgârda şemsiye kırılır.",
+    "Kanka bu SAT dedikodu gibi: kulağa geliyor ama belge az."
+  ],
+  IZLEMEDE: [
+    "Cross geldi ama SAR daha ikna olmadı — çayını koy, bekliyoruz.",
+    "Yarım kurgu abi, yarım. Whipsaw'a gelmeyelim, pencere dolana kadar sabır.",
+    "Bir ayak bastı, öbürü havada. Erken atlayan ıslanır.",
+    "Sinyal fırında, pişmeden servis yok.",
+    "Mahallede söylenti var ama imza yok; izlemede kal.",
+    "Kanka daha nikâh kıyılmadı, sadece söz kesildi; SAR flip bekleniyor.",
+    "Grafik kapıyı araladı, içeri girmedi; sabırsız trade tokat yer.",
+    "Sarı ışık yanıyor reis; gaza değil frene yakın dur.",
+    "Kesişim var, teyit yok; sokak dilinde bunun adı beklemedir.",
+    "Kurgu mayalanıyor; ham ham yenirse mide bozar."
+  ],
+  NOTR: [
+    "Piyasa esniyor abi, ortada iş yok — kenarda dur.",
+    "Ne cross ne flip; boşa kürek çekme, izle.",
+    "Sokak sessiz, ortalamalar uykuda. Uyandıran olursa haber veririm.",
+    "Şu an trade değil, sabır zamanı reis.",
+    "Grafik çay molasında; sinyal çıkmadan gürültü yapma.",
+    "Mahalle sakin, dükkânlar kapalı; tetikleyici yok.",
+    "Kanka şu an piyasa 'bana bulaşma' modunda.",
+    "Ortada net yol yok; İstanbul tabelası gibi her ok başka yere bakıyor.",
+    "Nötr alan, en iyi pozisyon bazen pozisyonsuzluktur.",
+    "Sinyal yok, yorum çok; parayı dedikoduya yatırmıyoruz."
+  ],
+  HAM: [
+    "Ham mod açık kanka; MA/SAR konuştu, flow mahkemeye çağrılmadı.",
+    "Raw flow kapalı, karar çıplak grafikle geldi; stopu iki kere kontrol et.",
+    "Bu sinyal sade kahve: telvesi MA/SAR, şekeri yok.",
+    "Flow teyidi yok reis; tabela var ama zabıta imzası eksik.",
+    "Ham sinyal geldi; mahalle yoklaması yapılmadan yürüyorsun.",
+    "MA/SAR tamam, raw flow dışarıda kaldı; temkin modunu aç.",
+    "Bu karar çıplak motor kararı; gürültüyü ölçmedik.",
+    "Flow kapalıyken güven skoru yok; direksiyonda tamamen sen varsın."
+  ]
+};
+let lastComment = "";
+function comment(st, raw){
+  let key;
+  if (raw && raw.score == null && (st === "AL" || st === "SAT")) key = "HAM";
+  else if (st === "AL") key = raw && raw.score >= 75 ? "AL_HIGH" : raw && raw.score < 45 ? "AL_LOW" : "AL_MID";
+  else if (st === "SAT") key = raw && raw.score >= 75 ? "SAT_HIGH" : raw && raw.score < 45 ? "SAT_LOW" : "SAT_MID";
+  else key = st === "IZLEMEDE" ? "IZLEMEDE" : "NOTR";
+  const pool = POOL[key] || POOL.NOTR;
+  let pick;
+  do { pick = pool[Math.floor(Math.random()*pool.length)]; } while (pick === lastComment && pool.length > 1);
+  lastComment = pick;
+  if (raw && raw.score != null){
+    const firstReason = raw.reasons && raw.reasons[0] ? ` ${raw.reasons[0]}` : "";
+    return `${pick} Yön: ${st}, güven ${raw.score}/100 (${raw.grade}).${firstReason}`;
+  }
+  if (raw && raw.score == null) return `${pick} Yön: ${st}, güven: HAM.`;
+  return pick;
+}
+/* ================= 9. CHART / UI RENDER ================= */
+let chart, candleSeries, volSeries, maSeries = [], sarSeries, bbSeries = [], vwapSeries, rsiSeries, macdLineSeries, macdSignalSeries, macdHistSeries;
+const themeOpts = () => ({
+  layout: { background: { color: getComputedStyle(document.documentElement).getPropertyValue("--bg").trim() },
+            textColor: getComputedStyle(document.documentElement).getPropertyValue("--muted").trim() },
+  grid: { vertLines:{ color:"rgba(120,130,140,0.08)" }, horzLines:{ color:"rgba(120,130,140,0.08)" } },
+  timeScale: { timeVisible:true, secondsVisible:false },
+  crosshair: { mode: 0 }
+});
+function initChart(symbol){
+  const precision = S.pricePrecision[symbol] ?? 4;
+  const tickSize = S.tickSize[symbol] ?? 0.0001;
+  const priceFmt = { type: 'price', precision, minMove: tickSize };
+  chart = LightweightCharts.createChart($("chart"), themeOpts());
+  candleSeries = chart.addCandlestickSeries({
+    upColor:"#26a69a", downColor:"#ef5350", borderVisible:false,
+    wickUpColor:"#26a69a", wickDownColor:"#ef5350",
+    priceFormat: priceFmt
+  });
+  volSeries = chart.addHistogramSeries({
+    priceFormat:{type:"volume"}, priceScaleId:"vol"
+  });
+  const maColors = ["#e0b64c", "#4c8ce0", "#b06ce0"];
+  maSeries = maColors.map(() => chart.addLineSeries({ priceLineVisible:false, lastValueVisible:false }));
+  sarSeries = chart.addLineSeries({ lineStyle:LightweightCharts.LineStyle.Dotted,
+    priceLineVisible:false, lastValueVisible:false });
+  bbSeries = [
+    chart.addLineSeries({ priceLineVisible:false, lastValueVisible:false }),
+    chart.addLineSeries({ priceLineVisible:false, lastValueVisible:false }),
+    chart.addLineSeries({ priceLineVisible:false, lastValueVisible:false })
+  ];
+  vwapSeries = chart.addLineSeries({ priceLineVisible:false, lastValueVisible:false });
+  rsiSeries = chart.addLineSeries({ priceScaleId:"rsi", priceLineVisible:false, lastValueVisible:false });
+  macdHistSeries = chart.addHistogramSeries({ priceScaleId:"macd", priceLineVisible:false, lastValueVisible:false });
+  macdLineSeries = chart.addLineSeries({ priceScaleId:"macd", priceLineVisible:false, lastValueVisible:false });
+  macdSignalSeries = chart.addLineSeries({ priceScaleId:"macd", priceLineVisible:false, lastValueVisible:false });
+  applyLineStyles();
+  chart.priceScale("right").applyOptions({ borderVisible:false });
+  chart.priceScale("vol").applyOptions({ borderVisible:false });
+  chart.priceScale("rsi").applyOptions({ borderVisible:false });
+  chart.priceScale("macd").applyOptions({ borderVisible:false });
+  applyPanelLayout();
+  new ResizeObserver(() => {
+    chart.resize($("chartWrap").clientWidth, $("chartWrap").clientHeight);
+    const r = $("chartWrap").getBoundingClientRect(), dpr = window.devicePixelRatio||1;
+    for (const cv of [overlayCv, heatCv]){
+      if (!cv) continue;
+      cv.width = r.width*dpr; cv.height = r.height*dpr;
+      cv.style.width = r.width+'px'; cv.style.height = r.height+'px';
+    }
+    if (ctxO && ctxH){ ctxO.setTransform(dpr,0,0,dpr,0,0); ctxH.setTransform(dpr,0,0,dpr,0,0); }
+    markOverlayDirty();
+  }).observe($("chartWrap"));
+  // initial size for canvases
+  setTimeout(()=>{
+    const r = $("chartWrap").getBoundingClientRect(), dpr = window.devicePixelRatio||1;
+    for (const cv of [overlayCv, heatCv]){
+      if (!cv) continue;
+      cv.width = r.width*dpr; cv.height = r.height*dpr;
+      cv.style.width = r.width+'px'; cv.style.height = r.height+'px';
+    }
+    if (ctxO && ctxH){ ctxO.setTransform(dpr,0,0,dpr,0,0); ctxH.setTransform(dpr,0,0,dpr,0,0); }
+  }, 50);
+  chart.timeScale().subscribeVisibleLogicalRangeChange(markOverlayDirty);
+  chart.timeScale().subscribeVisibleLogicalRangeChange(() => {
+    clearTimeout(rangeSaveTimer);
+    rangeSaveTimer = setTimeout(saveVisibleRange, 400);
+  });
+}
+// Ayarlar sekmesindeki renk/kalınlık tercihlerini tüm çizgi serilerine uygular.
+function hexToRgba(hex, alpha){
+  const h = (hex||"#888888").replace("#","");
+  const full = h.length===3 ? h.split("").map(c=>c+c).join("") : h;
+  const n = parseInt(full,16) || 0x888888;
+  const r=(n>>16)&255, g=(n>>8)&255, b=n&255;
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+function applyLineStyles(){
+  if (!chart || !maSeries.length) return;
+  const s = S.settings;
+  maSeries[0].applyOptions({ color:s.ma1Color, lineWidth:+s.ma1Width||1 });
+  maSeries[1].applyOptions({ color:s.ma2Color, lineWidth:+s.ma2Width||1 });
+  maSeries[2].applyOptions({ color:s.ma3Color, lineWidth:+s.ma3Width||1 });
+  sarSeries.applyOptions({ color:s.sarColor, lineWidth:+s.sarWidth||1 });
+  bbSeries[0].applyOptions({ color:hexToRgba(s.bbColor,0.75), lineWidth:+s.bbWidth||1 });
+  bbSeries[1].applyOptions({ color:hexToRgba(s.bbColor,0.35), lineWidth:+s.bbWidth||1 });
+  bbSeries[2].applyOptions({ color:hexToRgba(s.bbColor,0.75), lineWidth:+s.bbWidth||1 });
+  vwapSeries.applyOptions({ color:s.vwapColor, lineWidth:+s.vwapWidth||1 });
+  rsiSeries.applyOptions({ color:s.rsiColor, lineWidth:+s.rsiWidth||1 });
+  macdLineSeries.applyOptions({ color:s.macdColor, lineWidth:+s.macdWidth||1 });
+  macdSignalSeries.applyOptions({ color:s.macdSignalColor, lineWidth:+s.macdSignalWidth||1 });
+}
+// Görünür panellere göre (RSI/MACD/Hacim) mumlar için dinamik yükseklik ayarı.
+// Kapalı panel varsa boşluğu otomatik olarak mum grafiğine ekler.
+function applyPanelLayout(){
+  if (!chart) return;
+  const topPad = 0.05;
+  const heights = {
+    rsi: S.settings.showRsi ? 0.17 : 0,
+    macd: S.settings.showMacd ? 0.17 : 0,
+    vol: S.settings.showVol ? 0.11 : 0
+  };
+  const totalReserved = heights.rsi + heights.macd + heights.vol;
+  const candleBottom = totalReserved > 0 ? totalReserved : 0.08;
+  chart.priceScale("right").applyOptions({ scaleMargins:{ top: topPad, bottom: candleBottom } });
+  let cursor = 1 - candleBottom;
+  ["rsi","macd","vol"].forEach(key => {
+    const h = heights[key];
+    if (h <= 0) return;
+    const top = cursor;
+    const bottom = 1 - (cursor + h);
+    chart.priceScale(key).applyOptions({ scaleMargins:{ top, bottom } });
+    cursor += h;
+  });
+}
+function redrawAll(){
+  const cs = S.candles;
+  candleSeries.setData(cs);
+  volSeries.setData(S.settings.showVol ? cs.map(c => ({
+    time:c.time, value:c.volume, color: c.close >= c.open ? "rgba(38,166,154,0.45)" : "rgba(239,83,80,0.45)"
+  })) : []);
+  const closes = cs.map(c => c.close);
+  const periods = [S.settings.ma1, S.settings.ma2, S.settings.ma3];
+  periods.forEach((p, k) => {
+    const m = sma(closes, p);
+    maSeries[k].setData(S.settings.showMa ? cs.map((c,j) => m[j]==null?null:{time:c.time,value:m[j]}).filter(Boolean) : []);
+  });
+  const {sar} = psar(cs, S.settings.sarStep, S.settings.sarMax);
+  sarSeries.setData(S.settings.showSar ? lineData(cs, sar) : []);
+
+  const bbP = Math.max(2, Math.round(+S.settings.bbPeriod || 20));
+  const bbStd = Math.max(0.1, +S.settings.bbStd || 2);
+  const bb = bollinger(cs, bbP, bbStd);
+  bbSeries[0].setData(S.settings.showBB ? lineData(cs, bb.upper) : []);
+  bbSeries[1].setData(S.settings.showBB ? lineData(cs, bb.mid) : []);
+  bbSeries[2].setData(S.settings.showBB ? lineData(cs, bb.lower) : []);
+  vwapSeries.setData(S.settings.showVwap ? lineData(cs, vwapCalc(cs)) : []);
+  const rsiP = Math.max(2, Math.round(+S.settings.rsiPeriod || 14));
+  rsiSeries.setData(S.settings.showRsi ? lineData(cs, rsiSeriesCalc(closes, rsiP)) : []);
+  const macd = macdCalc(closes,
+    Math.max(2, Math.round(+S.settings.macdFast || 12)),
+    Math.max(3, Math.round(+S.settings.macdSlow || 26)),
+    Math.max(2, Math.round(+S.settings.macdSignal || 9)));
+  macdLineSeries.setData(S.settings.showMacd ? lineData(cs, macd.line) : []);
+  macdSignalSeries.setData(S.settings.showMacd ? lineData(cs, macd.signal) : []);
+  macdHistSeries.setData(S.settings.showMacd ? cs.map((c,j) => macd.hist[j]==null?null:{
+    time:c.time, value:macd.hist[j], color: macd.hist[j] >= 0 ? "rgba(38,166,154,0.55)" : "rgba(239,83,80,0.55)"
+  }).filter(Boolean) : []);
+  redrawMarkers();
+}
+function allMarkers(){
+  const liq = S.settings.showLiq ? flow.markers : [];
+  const whale = S.settings.whaleAlerts ? flow.eventMarkers : [];
+  const pat = [...(patOverlay.ctxMarkers||[]), ...(patOverlay.poolMarkers||[])];
+  return [...liq, ...whale, ...engine.markers, ...pat].sort((a,b)=>a.time-b.time);
+}
+function redrawMarkers(){ if (candleSeries) candleSeries.setMarkers(allMarkers()); }
+// RAF-batched canlı güncelleme (mum kapanmadan sadece son mumu günceller)
+let rafPending = false, liveCandle = null;
+function scheduleLiveUpdate(c){
+  liveCandle = c;
+  if (rafPending) return;
+  rafPending = true;
+  requestAnimationFrame(() => {
+    rafPending = false;
+    if (!liveCandle) return;
+    candleSeries.update(liveCandle);
+    if (S.settings.showVol) volSeries.update({
+      time:liveCandle.time, value:liveCandle.volume,
+      color: liveCandle.close >= liveCandle.open ? "rgba(38,166,154,0.45)" : "rgba(239,83,80,0.45)"
+    });
+  });
+}
+function runEngineAndRedraw(){ runEngine(); redrawAll(); }
+function renderSignalTab(){
+  const el = $("sigLog");
+  if (!engine.log.length){ el.innerHTML = '<div style="color:var(--muted);font-size:12.5px">Henüz sinyal yok.</div>'; return; }
+  el.innerHTML = engine.log.map(l =>
+    `<div class="item"><span class="st-${l.dir}"><b>${l.dir}</b> @ ${fmt(l.price)}</span>` +
+     `<span style="color:var(--muted)">${new Date(l.ts*1000).toLocaleString("tr-TR",{hour:"2-digit",minute:"2-digit",day:"2-digit",month:"2-digit"})}</span></div>` +
+     `<div style="font-size:11.5px;color:var(--muted);padding-bottom:6px">${escapeHtml(l.rule)}${l.score==null?" — HAM":` — Güven: ${l.score}/100 (${l.grade})`}</div>` +
+     `<div style="font-size:11px;color:var(--muted);padding-bottom:7px">${escapeHtml((l.reasons||[]).slice(0,2).join(" · "))}</div>`).join("");
+}
+function renderFlowMini(){
+  const snap = flowSnapshot();
+  const show = !!S.settings.showFlow;
+  $("flowMini").style.display = show ? "block" : "none";
+  setVal("miniCvd", compact(snap.cvd60), snap.cvd60);
+  setVal("miniObi", pct(flow.obi || snap.obi), flow.obi || snap.obi);
+  setVal("miniOi", Number.isFinite(snap.oiChangePct) ? signed(snap.oiChangePct,2)+"%" : "—", snap.oiChangePct);
+  setVal("miniFund", fundFmt(snap.funding), snap.funding);
+  setVal("rawCvdVal", `${compact(snap.cvd60)} / ${compact(snap.notional60)}`, snap.cvd60);
+  setVal("rawObiVal", `${pct(flow.obi||snap.obi)} (${compact(flow.bidVol)}/${compact(flow.askVol)})`, flow.obi||snap.obi);
+  setVal("rawOiVal", flow.oi==null ? "—" : `${compact(flow.oi)} (${signed(flow.oiChangePct,2)}%)`, flow.oiChangePct);
+  setVal("rawFundVal", fundFmt(flow.funding), flow.funding);
+  setVal("rawLiqVal", `L:${compact(snap.longLiq60)} / S:${compact(snap.shortLiq60)}`, snap.shortLiq60 - snap.longLiq60);
+  if (flow.spread) {
+    setVal("rawSpreadVal", fmtPrice(flow.spread), 0);
+  } else {
+    setVal("rawSpreadVal", "—");
+  }
+  setVal("rawWallsVal", `${flow.wallCount.bid}/${flow.wallCount.ask}`, flow.wallCount.bid - flow.wallCount.ask);
+  $("rawModeVal").textContent = (S.settings.rawConfirm && flow.depthReady) ? "Açık" : "Bağlanıyor";
+  showSyncBadge(flow.depthReady && !flow.depthSynced);
+  // Android bridge: surface events to native layer
+  try { if (window.Android && Android.connection) Android.connection(!$("wsDot").classList.contains("on"), ""); } catch(_){}
+}
+function setVal(id, text, signVal){
+  const el = $(id); if (!el) return;
+  el.textContent = text;
+  el.classList.remove("pos","neg","warn");
+  if (Number.isFinite(signVal)){
+    if (signVal > 0) el.classList.add("pos");
+    else if (signVal < 0) el.classList.add("neg");
+  }
+}
+/* ================= PATTERN POOL ENGINE ================= */
+const PPOOL_SCHEMA_VERSION = 1;
+const PPOOL_DB_NAME = "fs_pattern_pool";
+const PPOOL_DB_VERSION = 1;
+const PPOOL_SAR_BUCKETS = ["SAR0","SAR1","SAR2-3","SARX"];
+const PPool = { db:null, enabled:false, ready:null, busy:false, renderBusy:false, selectedKey:null, backfillToken:0 };
+const patOverlay = { ctxLines:[], ctxMarkers:[], poolLines:[], poolMarkers:[], poolActive:false, poolKey:null };
+const PATTERN_NAMES = buildPatternNames();
+function buildPatternNames(){
+  const pairs = {"9x21":"Hızlı/Orta", "9x50":"Hızlı/Ana Trend", "21x50":"Orta/Ana Trend"};
+  const dirs = {UP:"Golden Cross", DOWN:"Death Cross"};
+  const sar = {SAR0:"Anında SAR Onayı", SAR1:"1 Mum Sonra SAR Onayı", "SAR2-3":"2-3 Mum Gecikmeli SAR Onayı", SARX:"SAR Onaysız/Geç"};
+  const filt = {F1:"Trend Uyumlu", F0:"Trend Uyumsuz"};
+  const out = {};
+  Object.keys(pairs).forEach(p => Object.keys(dirs).forEach(d => PPOOL_SAR_BUCKETS.forEach(s => Object.keys(filt).forEach(f => {
+    out[`${p}_${d}_${s}_${f}`] = `${pairs[p]} ${dirs[d]} + ${sar[s]} + ${filt[f]}`;
+  }))));
+  return out;
+}
+function patternName(id){
+  if (PATTERN_NAMES[id]) return PATTERN_NAMES[id];
+  const x = parsePatternId(id);
+  if (!x) return id || "—";
+  const dir = x.dir === "UP" ? "Golden Cross" : "Death Cross";
+  const sar = {SAR0:"Anında SAR Onayı", SAR1:"1 Mum Sonra SAR Onayı", "SAR2-3":"2-3 Mum SAR Onayı", SARX:"SAR Onaysız/Geç"}[x.sar] || x.sar;
+  const flt = x.filter === "F1" ? "Trend Uyumlu" : "Trend Uyumsuz";
+  return `${x.pair} ${dir} + ${sar} + ${flt}`;
+}
+function parsePatternId(id){
+  const parts = String(id||"").split("_");
+  if (parts.length !== 4) return null;
+  return {pair:parts[0], dir:parts[1], sar:parts[2], filter:parts[3]};
+}
+function patternAllIds(){ return Object.keys(PATTERN_NAMES).sort(); }
+function intervalSec(tf){ return tf === "1m" ? 60 : tf === "5m" ? 300 : 60; }
+function patternPoolSetStatus(txt, warn=false){
+  const el = $("poolDbStatus"); if (el){ el.textContent = txt; el.className = warn ? "warn" : ""; }
+  const w = $("poolWarn"); if (w && warn){ w.style.display="block"; w.textContent=txt; }
+}
+function patternPoolInit(){
+  if (PPool.ready) return PPool.ready;
+  PPool.ready = new Promise(resolve => {
+    if (!("indexedDB" in window)){
+      PPool.enabled = false; patternPoolSetStatus("Kalıcı depolama yok, havuz devre dışı", true); resolve(false); return;
+    }
+    const req = indexedDB.open(PPOOL_DB_NAME, PPOOL_DB_VERSION);
+    req.onupgradeneeded = ev => {
+      const db = ev.target.result;
+      let events;
+      if (!db.objectStoreNames.contains("events")) events = db.createObjectStore("events", { keyPath:"id", autoIncrement:true });
+      else events = ev.target.transaction.objectStore("events");
+      [
+        ["patternKey","patternKey",false], ["coinPatternKey","coinPatternKey",false], ["coin","coin",false],
+        ["timeframe","timeframe",false], ["timestamp","timestamp",false], ["status","status",false], ["eventKey","eventKey",false]
+      ].forEach(([name,key,unique]) => { if (!events.indexNames.contains(name)) events.createIndex(name, key, {unique}); });
+      if (!db.objectStoreNames.contains("poolStats")) db.createObjectStore("poolStats", { keyPath:"key" });
+      if (!db.objectStoreNames.contains("metadata")) db.createObjectStore("metadata", { keyPath:"key" });
+    };
+    req.onsuccess = () => {
+      PPool.db = req.result; PPool.enabled = true; patternPoolSetStatus("Aktif — 1m/5m havuz topluyor");
+      dbPut("metadata", {key:"schemaVersion", value:PPOOL_SCHEMA_VERSION, updatedAt:Date.now()}).catch(()=>{});
+      resolve(true);
+    };
+    req.onerror = () => { PPool.enabled = false; patternPoolSetStatus("IndexedDB açılamadı, havuz devre dışı", true); resolve(false); };
+  });
+  return PPool.ready;
+}
+function dbTx(store, mode="readonly"){ return PPool.db.transaction(store, mode).objectStore(store); }
+function reqP(req){ return new Promise((res, rej) => { req.onsuccess=()=>res(req.result); req.onerror=()=>rej(req.error); }); }
+async function dbGet(store, key){ if(!PPool.enabled) return null; return reqP(dbTx(store).get(key)); }
+async function dbPut(store, val){ if(!PPool.enabled) return null; return reqP(dbTx(store,"readwrite").put(val)); }
+async function dbAdd(store, val){ if(!PPool.enabled) return null; return reqP(dbTx(store,"readwrite").add(val)); }
+async function dbDelete(store, key){ if(!PPool.enabled) return null; return reqP(dbTx(store,"readwrite").delete(key)); }
+async function dbAll(store){ if(!PPool.enabled) return []; return reqP(dbTx(store).getAll()); }
+async function dbIndexAll(store, index, key){ if(!PPool.enabled) return []; return reqP(dbTx(store).index(index).getAll(key)); }
+async function dbIndexGet(store, index, key){ if(!PPool.enabled) return null; return reqP(dbTx(store).index(index).get(key)); }
+function patternPeriods(){
+  return [Math.max(2,Math.round(+S.settings.ma1||9)), Math.max(3,Math.round(+S.settings.ma2||21)), Math.max(5,Math.round(+S.settings.ma3||50))];
+}
+function patternPairs(){
+  const [a,b,c] = patternPeriods();
+  return [{pair:`${a}x${b}`, fast:a, slow:b}, {pair:`${a}x${c}`, fast:a, slow:c}, {pair:`${b}x${c}`, fast:b, slow:c}];
+}
+function patternId(pair, dir, sar, filter){ return `${pair}_${dir}_${sar}_${filter}`; }
+function atrRatios(cs, period=14){
+  const out = new Array(cs.length).fill(null);
+  for (let i=1;i<cs.length;i++){
+    const start = Math.max(1, i-period+1); let sum=0, n=0;
+    for (let j=start;j<=i;j++){
+      const tr = Math.max(cs[j].high-cs[j].low, Math.abs(cs[j].high-cs[j-1].close), Math.abs(cs[j].low-cs[j-1].close));
+      sum += tr; n++;
+    }
+    out[i] = n && cs[i].close ? (sum/n)/cs[i].close : null;
+  }
+  return out;
+}
+function percentile(arr, p){
+  const a = arr.filter(v => Number.isFinite(v)).sort((x,y)=>x-y);
+  if (!a.length) return null;
+  const pos = (a.length-1)*p, lo=Math.floor(pos), hi=Math.ceil(pos);
+  return lo===hi ? a[lo] : a[lo] + (a[hi]-a[lo])*(pos-lo);
+}
+function patternContext(cs){
+  const closes = cs.map(c=>c.close);
+  const periods = [...new Set([...patternPeriods(), ...patternPairs().flatMap(p=>[p.fast,p.slow])])];
+  const ma = {}; periods.forEach(p => ma[p] = sma(closes, p));
+  const {trend} = psar(cs, S.settings.sarStep, S.settings.sarMax);
+  const atr = atrRatios(cs, 14);
+  return {cs, closes, ma, trend, atr};
+}
+function patternRegimeAt(ctx, i){
+  const atrWin = ctx.atr.slice(Math.max(0,i-99), i+1).filter(v=>Number.isFinite(v));
+  const p33 = percentile(atrWin, .33), p66 = percentile(atrWin, .66), val = ctx.atr[i];
+  let vol = "MID";
+  if (Number.isFinite(val) && p33!=null && p66!=null){ vol = val <= p33 ? "LOW" : val >= p66 ? "HIGH" : "MID"; }
+  const ma50 = ctx.ma[patternPeriods()[2]];
+  let trend = "FLAT";
+  if (ma50 && ma50[i]!=null && i>=10 && ma50[i-10]){
+    const slope = (ma50[i]-ma50[i-10]) / ma50[i-10];
+    trend = slope > 0.001 ? "UP" : slope < -0.001 ? "DOWN" : "FLAT";
+  }
+  return {vol, trend, key:`${vol}_${trend}`};
+}
+function patternCrossesAt(ctx, i){
+  const out = [], ma50 = ctx.ma[patternPeriods()[2]];
+  if (i < 1 || !ma50 || ma50[i]==null) return out;
+  for (const p of patternPairs()){
+    const f = ctx.ma[p.fast], sl = ctx.ma[p.slow];
+    if (!f || !sl || f[i]==null || sl[i]==null || f[i-1]==null || sl[i-1]==null) continue;
+    let dir = null;
+    if (f[i-1] <= sl[i-1] && f[i] > sl[i]) dir = "UP";
+    if (f[i-1] >= sl[i-1] && f[i] < sl[i]) dir = "DOWN";
+    if (!dir) continue;
+    const filter = dir === "UP" ? (ctx.cs[i].close > ma50[i] ? "F1":"F0") : (ctx.cs[i].close < ma50[i] ? "F1":"F0");
+    out.push({pair:p.pair, dir, filter, regime:patternRegimeAt(ctx,i)});
+  }
+  return out;
+}
+function patternResolveSar(ctx, crossIdx, dir, lastIdx){
+  const desired = dir === "UP" ? 1 : -1;
+  if (ctx.trend[crossIdx] === desired) return {bucket:"SAR0", finalIndex:crossIdx};
+  const maxJ = Math.min(crossIdx+3, lastIdx);
+  for (let j=crossIdx+1; j<=maxJ; j++){
+    if (ctx.trend[j] === desired && ctx.trend[j-1] !== desired) return {bucket:j-crossIdx === 1 ? "SAR1" : "SAR2-3", finalIndex:j};
+  }
+  if (lastIdx >= crossIdx + 4) return {bucket:"SARX", finalIndex:crossIdx+4};
+  return null;
+}
+function patternOutcome(cs, idx, dir){
+  if (idx+20 >= cs.length) return null;
+  const ref = cs[idx].close; if (!ref) return null;
+  const sign = dir === "UP" ? 1 : -1;
+  const closeRet = n => sign * ((cs[idx+n].close - ref) / ref) * 100;
+  let mfe = 0, mae = 0, barsToMfe = 0, barsToMae = 0, stopped = false, bestBeforeStop = 0;
+  const stopPct = 0.3;
+  for (let j=1;j<=20;j++){
+    const fav = dir === "UP" ? ((cs[idx+j].high - ref)/ref)*100 : ((ref - cs[idx+j].low)/ref)*100;
+    const adv = dir === "UP" ? ((ref - cs[idx+j].low)/ref)*100 : ((cs[idx+j].high - ref)/ref)*100;
+    if (fav > mfe){ mfe = fav; barsToMfe = j; }
+    if (adv > mae){ mae = adv; barsToMae = j; }
+    if (!stopped && adv >= stopPct){ stopped = true; }
+    if (!stopped && fav > bestBeforeStop) bestBeforeStop = fav;
+  }
+  return {
+    ret5: closeRet(5), ret10: closeRet(10), ret20: closeRet(20),
+    mfe20: mfe, mae20: mae, rMultiple: stopped ? -1 : bestBeforeStop / stopPct,
+    barsToMfe, barsToMae
+  };
+}
+function patternEventBase(coin, tf, crossIdx, cross, cs, source){
+  const ts = cs[crossIdx].time;
+  return {
+    schemaVersion:PPOOL_SCHEMA_VERSION, source, coin, timeframe:tf, timestamp:ts,
+    eventKey:`${coin}:${tf}:${cross.pair}:${cross.dir}:${ts}`,
+    pair:cross.pair, dir:cross.dir, filter:cross.filter,
+    volRegime:cross.regime.vol, trendRegime:cross.regime.trend, regimeKey:cross.regime.key,
+    refClose:cs[crossIdx].close, status:"pending", createdAt:Date.now()
+  };
+}
+async function patternRecentExists(coin, tf, patId, ts, excludeId=null){
+  const key = `${coin}:${tf}:${patId}`;
+  const arr = await dbIndexAll("events", "coinPatternKey", key);
+  const sec = intervalSec(tf) * 3;
+  return arr.some(e => e.id !== excludeId && Math.abs((e.timestamp||0)-ts) <= sec);
+}
+async function patternAddOrUpdateEvent(ev){
+  const old = await dbIndexGet("events", "eventKey", ev.eventKey);
+  if (old){
+    const merged = Object.assign({}, old, ev, {id:old.id});
+    await dbPut("events", merged); return merged;
+  }
+  const id = await dbAdd("events", ev); ev.id = id; return ev;
+}
+function patternFinalizeEvent(ev, sarBucket){
+  ev.sarBucket = sarBucket;
+  ev.patternId = patternId(ev.pair, ev.dir, sarBucket, ev.filter);
+  ev.patternKey = `${ev.timeframe}:${ev.patternId}`;
+  ev.coinPatternKey = `${ev.coin}:${ev.timeframe}:${ev.patternId}`;
+  ev.status = "tracking";
+  ev.finalizedAt = Date.now();
+  return ev;
+}
+async function patternBackfillSymbol(coin){
+  if (!await patternPoolInit()) return;
+  const token = ++PPool.backfillToken;
+  patternPoolSetStatus(`Backfill çalışıyor: ${coin}`);
+  try{
+    const affected = new Set();
+    for (const tf of PATTERN_TFS){
+      if (token !== PPool.backfillToken) return;
+      const cs = (coin===S.symbol && tf===S.interval && S.candles.length>=120) ? S.candles.slice() : await fetchKlines(coin, tf, 600);
+      const keys = await patternBackfillCandles(coin, tf, cs);
+      keys.forEach(k=>affected.add(k));
+      const keys2 = await patternUpdateOpenEvents(coin, tf, cs);
+      keys2.forEach(k=>affected.add(k));
+    }
+    await patternRecomputeKeys(affected);
+    patternPoolSetStatus(`Aktif — ${coin} 1m/5m backfill tamam`);
+    renderPoolView();
+  }catch(e){ console.warn("Pattern backfill hata:", e); patternPoolSetStatus("Havuz backfill hatası — ana motor etkilenmedi", true); }
+}
+async function patternBackfillCandles(coin, tf, cs){
+  const affected = new Set();
+  if (!cs || cs.length < 80) return affected;
+  const ctx = patternContext(cs);
+  const minI = Math.max(...patternPeriods()) + 2;
+  for (let i=minI; i<cs.length-20; i++){
+    const crosses = patternCrossesAt(ctx, i);
+    if (!crosses.length) continue;
+    for (const cross of crosses){
+      const sar = patternResolveSar(ctx, i, cross.dir, cs.length-1); if (!sar) continue;
+      const out = patternOutcome(cs, i, cross.dir); if (!out) continue;
+      let ev = patternEventBase(coin, tf, i, cross, cs, "backfill");
+      patternFinalizeEvent(ev, sar.bucket);
+      ev.status = "settled"; ev.settledAt = Date.now(); Object.assign(ev, out);
+      if (await patternRecentExists(coin, tf, ev.patternId, ev.timestamp)) continue;
+      await patternAddOrUpdateEvent(ev);
+      affected.add(ev.patternKey); affected.add(ev.coinPatternKey);
+    }
+  }
+  return affected;
+}
+async function patternPoolOnClosedCandle(coin, tf, cs){
+  if (!PATTERN_TFS.includes(tf)) return;
+  if (!await patternPoolInit()) return;
+  try{
+    const ctx = patternContext(cs), i = cs.length-1;
+    const affected = new Set();
+    const crosses = patternCrossesAt(ctx, i);
+    for (const cross of crosses){
+      let ev = patternEventBase(coin, tf, i, cross, cs, "live");
+      const sar = patternResolveSar(ctx, i, cross.dir, i);
+      if (sar){
+        patternFinalizeEvent(ev, sar.bucket);
+        if (await patternRecentExists(coin, tf, ev.patternId, ev.timestamp)) continue;
+      }
+      await patternAddOrUpdateEvent(ev);
+    }
+    const keys = await patternUpdateOpenEvents(coin, tf, cs); keys.forEach(k=>affected.add(k));
+    await patternRecomputeKeys(affected);
+    if ($("view-pool")?.classList.contains("active")) renderPoolView();
+  }catch(e){ console.warn("Pattern live hata:", e); }
+}
+async function patternUpdateOpenEvents(coin, tf, cs){
+  const affected = new Set();
+  if (!PPool.enabled || !PATTERN_TFS.includes(tf)) return affected;
+  const open = (await dbIndexAll("events", "coin", coin)).filter(e => e.timeframe===tf && (e.status==="pending" || e.status==="tracking"));
+  if (!open.length) return affected;
+  const ctx = patternContext(cs);
+  const timeToIdx = new Map(cs.map((c,i)=>[c.time,i]));
+  for (const ev of open){
+    const i = timeToIdx.get(ev.timestamp); if (i == null) continue;
+    let changed = false;
+    if (ev.status === "pending"){
+      const sar = patternResolveSar(ctx, i, ev.dir, cs.length-1);
+      if (sar){
+        patternFinalizeEvent(ev, sar.bucket);
+        if (await patternRecentExists(coin, tf, ev.patternId, ev.timestamp, ev.id)){
+          if (ev.id) await dbDelete("events", ev.id);
+          continue;
+        }
+        changed = true;
+      }
+    }
+    if (ev.status === "tracking"){
+      const out = patternOutcome(cs, i, ev.dir);
+      if (out){ Object.assign(ev, out); ev.status="settled"; ev.settledAt=Date.now(); changed=true; }
+    }
+    if (changed){
+      await dbPut("events", ev);
+      if (ev.patternKey){ affected.add(ev.patternKey); affected.add(ev.coinPatternKey); }
+    }
+  }
+  return affected;
+}
+async function patternCompleteOpenForSymbol(coin){
+  if (!await patternPoolInit()) return;
+  for (const tf of PATTERN_TFS){
+    try{ const cs = await fetchKlines(coin, tf, 600); const keys = await patternUpdateOpenEvents(coin, tf, cs); await patternRecomputeKeys(keys); }
+    catch(e){ console.warn("open complete hata", coin, tf, e); }
+  }
+}
+async function patternCompleteAllOpenEvents(){
+  if (!await patternPoolInit()) return;
+  const open = (await dbAll("events")).filter(e => e.status === "pending" || e.status === "tracking");
+  const groups = [...new Set(open.map(e => `${e.coin}:${e.timeframe}`))].filter(g => PATTERN_TFS.includes(g.split(":")[1]));
+  for (const g of groups.slice(0, 20)){
+    const [coin, tf] = g.split(":");
+    try{ const cs = await fetchKlines(coin, tf, 600); const keys = await patternUpdateOpenEvents(coin, tf, cs); await patternRecomputeKeys(keys); }
+    catch(e){ console.warn("open all complete hata", coin, tf, e); }
+  }
+}
+function wilsonLower(wins, n){
+  if (!n) return 0;
+  const z=1.96, p=wins/n, denom=1+z*z/n;
+  const centre=p+z*z/(2*n), adj=z*Math.sqrt((p*(1-p)+z*z/(4*n))/n);
+  return Math.max(0, (centre-adj)/denom)*100;
+}
+function avg(arr){ return arr.length ? arr.reduce((a,b)=>a+b,0)/arr.length : 0; }
+function std(arr){ if (arr.length<2) return 0; const m=avg(arr); return Math.sqrt(avg(arr.map(x=>(x-m)*(x-m)))); }
+function median(arr){ const a=arr.filter(Number.isFinite).sort((x,y)=>x-y); if(!a.length) return 0; const m=Math.floor(a.length/2); return a.length%2?a[m]:(a[m-1]+a[m])/2; }
+async function patternRecomputeKeys(keys){
+  if (!PPool.enabled || !keys || !keys.size) return;
+  for (const key of keys) await patternRecomputeStats(key);
+}
+async function patternEventsForStatKey(key){
+  const parts = key.split(":");
+  if (parts.length === 2) return dbIndexAll("events", "patternKey", key);
+  if (parts.length === 3) return dbIndexAll("events", "coinPatternKey", key);
+  return [];
+}
+async function patternRecomputeStats(key){
+  let events = (await patternEventsForStatKey(key)).filter(e => e.status === "settled").sort((a,b)=>(b.timestamp||0)-(a.timestamp||0));
+  if (events.length > 500){
+    const old = events.slice(500); events = events.slice(0,500);
+    old.forEach(e => { if (e.id) dbDelete("events", e.id).catch(()=>{}); });
+  }
+  const n = events.length, thr = +S.settings.patternWinPct || 0.15;
+  const wins = events.filter(e => +e.ret10 > thr).length;
+  let wSum=0, wWins=0, wRet=0;
+  events.forEach((e,k)=>{ const w=Math.pow(0.98,k); wSum+=w; if(+e.ret10>thr) wWins+=w; wRet += (+e.ret10||0)*w; });
+  const ret10s = events.map(e=>+e.ret10||0), mfes=events.map(e=>+e.mfe20||0), maes=events.map(e=>+e.mae20||0), rms=events.map(e=>+e.rMultiple||0), bars=events.map(e=>+e.barsToMfe||0);
+  const regimes = {};
+  events.forEach(e => {
+    const rk = e.regimeKey || `${e.volRegime||"MID"}_${e.trendRegime||"FLAT"}`;
+    const r = regimes[rk] || (regimes[rk] = {key:rk, n:0, wins:0, ret10Sum:0});
+    r.n++; if ((+e.ret10||0) > thr) r.wins++; r.ret10Sum += (+e.ret10||0);
+  });
+  Object.values(regimes).forEach(r => { r.winRate = r.n ? r.wins/r.n*100 : 0; r.avgRet10 = r.n ? r.ret10Sum/r.n : 0; });
+  const parts = key.split(":"), coin = parts.length===3 ? parts[0] : null, tf = parts.length===3 ? parts[1] : parts[0], patId = parts.length===3 ? parts[2] : parts[1];
+  const stat = {
+    key, schemaVersion:PPOOL_SCHEMA_VERSION, updatedAt:Date.now(), scope:coin?"coin":"global", coin, timeframe:tf, patternId:patId,
+    n, wins, winRate:n?wins/n*100:0, wilsonLower:wilsonLower(wins,n),
+    avgRet10:avg(ret10s), stdRet10:std(ret10s), avgMfe20:avg(mfes), avgMae20:avg(maes), avgRMultiple:avg(rms), medBarsToMfe:median(bars),
+    weightedWinRate:wSum?wWins/wSum*100:0, weightedAvgRet10:wSum?wRet/wSum:0, regimes
+  };
+  await dbPut("poolStats", stat);
+  return stat;
+}
+async function patternGetStats(key){ return (await dbGet("poolStats", key)) || null; }
+function patternSignalId(dir, idx, elapsed){
+  if (!S.candles[idx]) return null;
+  const pair = `${patternPeriods()[0]}x${patternPeriods()[1]}`;
+  const pdir = dir === "AL" ? "UP" : "DOWN";
+  const sar = elapsed === 0 ? "SAR0" : elapsed === 1 ? "SAR1" : elapsed <= 3 ? "SAR2-3" : "SARX";
+  const closes = S.candles.map(c=>c.close), ma50 = sma(closes, patternPeriods()[2]);
+  const filter = pdir === "UP" ? (S.candles[idx].close > ma50[idx] ? "F1":"F0") : (S.candles[idx].close < ma50[idx] ? "F1":"F0");
+  return patternId(pair, pdir, sar, filter);
+}
+async function patternRenderSignalContext(patId, idx=null){
+  const el = $("patternHist"); if (!el) return;
+  if (!patId){ el.innerHTML = `<b>Tarihsel Performans</b><span>Katman 1 sinyali gelince ilgili desen havuzu burada görünecek.</span>`; return; }
+  if (!PATTERN_TFS.includes(S.interval)){ el.innerHTML = `<b>Tarihsel Performans</b><span>Havuz bu fazda sadece 1m ve 5m için aktif.</span>`; return; }
+  if (!await patternPoolInit()){ el.innerHTML = `<b>Tarihsel Performans</b><span>Kalıcı depolama yok, havuz devre dışı.</span>`; return; }
+  const gKey = `${S.interval}:${patId}`, cKey = `${S.symbol}:${S.interval}:${patId}`;
+  const [g,c] = await Promise.all([patternGetStats(gKey), patternGetStats(cKey)]);
+  const use = c && c.n >= 30 ? c : g;
+  const src = c && c.n >= 30 ? `${S.symbol} overlay` : "Global havuz";
+  if (!use || !use.n){ el.innerHTML = `<b>Tarihsel Performans</b><span class="histMain">${escapeHtml(patternName(patId))}</span><div class="histSub">Veri topluyor — bu desen için henüz settled örnek yok.</div>`; return; }
+  let insight = "";
+  try{
+    const ctx = patternContext(S.candles), reg = patternRegimeAt(ctx, idx ?? S.candles.length-1);
+    const r = use.regimes && use.regimes[reg.key];
+    if (r && r.n >= 20) insight = `<div class="histSub">Şartlı içgörü (${reg.vol}/${reg.trend}): win ${r.winRate.toFixed(0)}% · ret10 ${signed(r.avgRet10,2)}% · ${r.n} örnek</div>`;
+  }catch(e){ /* sessiz */ }
+  const badge = use.n < 15 ? "Veri topluyor" : use.wilsonLower >= 50 ? "Güvenilir" : use.wilsonLower < 42 ? "Zayıf" : "İzleniyor";
+  el.innerHTML = `<b>Tarihsel Performans</b><span class="histMain">${escapeHtml(patternName(patId))}</span>`+
+    `<div class="histSub">${src}: win ${use.winRate.toFixed(0)}% · Wilson alt ${use.wilsonLower.toFixed(0)}% · ${use.n} örnek · ${badge}</div>`+
+    `<div class="histSub">Ret10 ${signed(use.avgRet10,2)}% (ağırlıklı ${signed(use.weightedAvgRet10,2)}%) · MFE/MAE ${use.avgMfe20.toFixed(2)}%/${use.avgMae20.toFixed(2)}% · MFE medyan ${use.medBarsToMfe.toFixed(0)} mum</div>`+
+    (c && c.n>=30 && g ? `<div class="histSub">Global referans: win ${g.winRate.toFixed(0)}% · Wilson ${g.wilsonLower.toFixed(0)}% · ${g.n} örnek</div>` : "") + insight;
+}
+function poolBadge(stats){
+  if (!stats || stats.n < 15) return `<span class="badge wait">veri topluyor</span>`;
+  if (stats.wilsonLower >= 50) return `<span class="badge good">güvenilir</span>`;
+  if (stats.wilsonLower < 42) return `<span class="badge bad">zayıf</span>`;
+  return `<span class="badge">izleniyor</span>`;
+}
+async function renderPoolView(){
+  const rows = $("poolRows"); if (!rows) return;
+  if (!await patternPoolInit()){ rows.innerHTML = `<div style="padding:12px;color:var(--watch);font-size:12px">Kalıcı depolama yok, havuz devre dışı.</div>`; return; }
+  const tfFilter = $("poolTfFilter")?.value || "all";
+  const minN = +($("poolMinFilter")?.value || 0);
+  const statsArr = await dbAll("poolStats");
+  const byKey = new Map(statsArr.filter(s => s.scope === "global").map(s => [s.key, s]));
+  let keys = [];
+  PATTERN_TFS.forEach(tf => patternAllIds().forEach(pid => keys.push(`${tf}:${pid}`)));
+  const defaultKeySet = new Set(keys);
+  statsArr.filter(s => s.scope==="global" && !defaultKeySet.has(s.key)).forEach(s => keys.push(s.key));
+  let list = keys.map(key => byKey.get(key) || {key, scope:"global", timeframe:key.split(":")[0], patternId:key.split(":")[1], n:0, wins:0, winRate:0, wilsonLower:0, avgRet10:0, avgMfe20:0, avgMae20:0, weightedWinRate:0});
+  list = list.filter(s => (tfFilter==="all" || s.timeframe===tfFilter) && s.n >= minN)
+             .sort((a,b) => (b.wilsonLower-a.wilsonLower) || (b.n-a.n));
+  if (!list.length){ rows.innerHTML = `<div style="padding:12px;color:var(--muted);font-size:12px">Filtreye uygun havuz yok.</div>`; return; }
+  rows.innerHTML = list.map(st => `<div class="poolRow" data-key="${st.key}">`+
+    `<span>${escapeHtml(patternName(st.patternId))}<small>${st.patternId}</small></span>`+
+    `<span>${st.timeframe}</span><span>${st.n||0}</span><span>${(st.wilsonLower||0).toFixed(0)}%</span>`+
+    `<span>${signed(st.avgRet10||0,2)}%</span><span>${(st.avgMfe20||0).toFixed(2)}/${(st.avgMae20||0).toFixed(2)}</span><span>${poolBadge(st)}</span></div>`).join("");
+  rows.querySelectorAll(".poolRow").forEach(r => r.onclick = () => renderPoolDetail(r.dataset.key));
+}
+async function renderPoolDetail(key){
+  PPool.selectedKey = key;
+  const el = $("poolDetail"); if (!el || !PPool.enabled) return;
+  const st = await patternGetStats(key);
+  const evs = (await patternEventsForStatKey(key)).filter(e=>e.status==="settled").sort((a,b)=>(b.timestamp||0)-(a.timestamp||0));
+  if (!st){ el.innerHTML = "Bu havuz henüz veri topluyor."; return; }
+  const regs = Object.values(st.regimes||{}).sort((a,b)=>b.n-a.n).map(r => `<tr><td>${r.key.replace("_","/")}</td><td>${r.n}</td><td>${r.winRate.toFixed(0)}%</td><td>${signed(r.avgRet10,2)}%</td></tr>`).join("") || `<tr><td colspan="4">Rejim verisi yok</td></tr>`;
+  const samples = evs.slice(0,20).map(e => `<div class="sample"><span>${e.coin} · ${new Date(e.timestamp*1000).toLocaleString("tr-TR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}<br><small>${e.source||"live"} · ${e.volRegime}/${e.trendRegime}</small></span><b class="${(+e.ret10||0)>0?'pos':'neg'}">ret10 ${signed(e.ret10,2)}% · R ${signed(e.rMultiple,2)}</b></div>`).join("") || "Son örnek yok.";
+  const overlayOn = patOverlay.poolActive && patOverlay.poolKey === key;
+  el.innerHTML = `<button class="btn" id="poolBackBtn" style="margin-bottom:10px">◀ Listeye dön</button>`+
+    `<div><b style="color:var(--text)">${escapeHtml(patternName(st.patternId))}</b><div style="margin-top:4px">${st.key}</div></div>`+
+    `<div class="metricGrid" style="margin-top:8px"><div class="metric"><span>Ham win</span><b>${st.winRate.toFixed(1)}%</b></div><div class="metric"><span>Ağırlıklı win</span><b>${st.weightedWinRate.toFixed(1)}%</b></div><div class="metric"><span>Wilson alt</span><b>${st.wilsonLower.toFixed(1)}%</b></div><div class="metric"><span>Örnek</span><b>${st.n}</b></div></div>`+
+    `<button class="btn" id="poolOverlayBtn" style="margin-top:10px;width:100%">${overlayOn ? "✕ Grafikten Kaldır" : `📈 Grafikte Göster (${S.symbol})`}</button>`+
+    `<table><tr><th>Rejim</th><th>N</th><th>Win</th><th>Ret10</th></tr>${regs}</table>`+
+    `<div style="margin-top:10px;color:var(--text);font-weight:700">Son 20 örnek</div>${samples}`;
+  if ($("poolOverlayBtn")) $("poolOverlayBtn").onclick = () => togglePoolOverlay(key);
+  if ($("poolBackBtn")) $("poolBackBtn").onclick = () => {
+    PPool.selectedKey = null;
+    el.innerHTML = "Leaderboard'dan bir desen seç.";
+    $("view-pool")?.scrollTo({top:0, behavior:"smooth"});
+  };
+}
+async function patternPoolExport(){
+  if (!await patternPoolInit()) return;
+  const data = {schemaVersion:PPOOL_SCHEMA_VERSION, exportedAt:new Date().toISOString(), events:await dbAll("events"), poolStats:await dbAll("poolStats")};
+  const blob = new Blob([JSON.stringify(data,null,2)], {type:"application/json"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob); a.download = `futures-pattern-pool-${Date.now()}.json`; a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+}
+async function patternPoolImport(file){
+  if (!file || !await patternPoolInit()) return;
+  const txt = await file.text(); const data = JSON.parse(txt);
+  if (!Array.isArray(data.events)) throw new Error("JSON events alanı yok");
+  const affected = new Set(); let n=0;
+  for (const e0 of data.events){
+    const e = Object.assign({}, e0); delete e.id;
+    if (!e.eventKey) continue;
+    const old = await dbIndexGet("events", "eventKey", e.eventKey);
+    if (!old){ await dbAdd("events", e); n++; }
+    if (e.patternKey) { affected.add(e.patternKey); if (e.coinPatternKey) affected.add(e.coinPatternKey); }
+  }
+  await patternRecomputeKeys(affected);
+  patternPoolSetStatus(`İçe aktarıldı: ${n} yeni olay`);
+  renderPoolView();
+}
+async function patternRecomputeAllStats(){
+  if (!await patternPoolInit()) return;
+  const keys = new Set();
+  (await dbAll("events")).forEach(e => { if (e.status === "settled" && e.patternKey){ keys.add(e.patternKey); if (e.coinPatternKey) keys.add(e.coinPatternKey); } });
+  await patternRecomputeKeys(keys);
+  renderPoolView();
+}
+function bindPatternPoolUI(){
+  if ($("poolTfFilter")) $("poolTfFilter").onchange = renderPoolView;
+  if ($("poolMinFilter")) $("poolMinFilter").onchange = renderPoolView;
+  if ($("poolRefreshBtn")) $("poolRefreshBtn").onclick = renderPoolView;
+  if ($("poolExportBtn")) $("poolExportBtn").onclick = patternPoolExport;
+  if ($("poolImportBtn")) $("poolImportBtn").onclick = () => $("poolImportFile").click();
+  if ($("poolImportFile")) $("poolImportFile").onchange = async e => {
+    try{ await patternPoolImport(e.target.files[0]); }
+    catch(err){ patternPoolSetStatus("İçe aktarma hatası: " + err.message, true); }
+    e.target.value = "";
+  };
+}
+/* ================= PATTERN CHART OVERLAY — geçmiş desenleri grafikte göster ================= */
+// Bir event'in giriş fiyatından, MFE/MAE yüzdesine göre gerçek fiyat+zaman noktasını türetir.
+function patOutcomePoint(ev, kind){
+  if (!ev || !ev.refClose || !ev.timestamp) return null;
+  const bars = kind === "mfe" ? ev.barsToMfe : ev.barsToMae;
+  if (bars == null) return null; // eski (barsToMae'siz) event'lerde MAE noktası çizilemez
+  const magnitude = kind === "mfe" ? (+ev.mfe20 || 0) : (+ev.mae20 || 0);
+  const favorable = kind === "mfe";
+  const goingUp = ev.dir === "UP";
+  const priceUpward = (goingUp && favorable) || (!goingUp && !favorable);
+  return {
+    time: ev.timestamp + bars * intervalSec(ev.timeframe),
+    price: ev.refClose * (1 + (priceUpward ? 1 : -1) * magnitude / 100)
+  };
+}
+// Sadece yüklü mum aralığında (S.candles) çizim yapabiliriz; aksi halde marker/çizgi zaman ekseninde karşılıksız kalır.
+function patEventDrawable(ev){
+  return !!(S.candles.length && ev && ev.timestamp >= S.candles[0].time);
+}
+function eventOverlayMarkers(ev){
+  const out = [];
+  const dirUp = ev.dir === "UP";
+  const mfe = patOutcomePoint(ev, "mfe"), mae = patOutcomePoint(ev, "mae");
+  out.push({ time: ev.timestamp, position: dirUp ? "belowBar" : "aboveBar", color:"#8b949e", shape:"circle",
+    text: `giriş ${ev.dir==="UP"?"AL":"SAT"}` });
+  if (mfe) out.push({ time: mfe.time, position: dirUp ? "aboveBar" : "belowBar", color:"#26a69a", shape:"circle",
+    text: `MFE +${(+ev.mfe20||0).toFixed(2)}%` });
+  if (mae) out.push({ time: mae.time, position: dirUp ? "belowBar" : "aboveBar", color:"#ef5350", shape:"circle",
+    text: `MAE -${(+ev.mae20||0).toFixed(2)}%` });
+  return { markers: out, mfe, mae };
+}
+function clearPatLineSeries(arr){
+  arr.forEach(s => { try{ chart.removeSeries(s); }catch(e){} });
+  arr.length = 0;
+}
+function addPatLine(p1, p2, color){
+  const s = chart.addLineSeries({
+    color, lineWidth:1, priceLineVisible:false, lastValueVisible:false,
+    lineStyle: LightweightCharts.LineStyle.Dotted, crosshairMarkerVisible:false
+  });
+  s.setData([{time:p1.time, value:p1.price}, {time:p2.time, value:p2.price}]);
+  return s;
+}
+function drawEventOverlay(ev, linesArr, markersOut){
+  if (!patEventDrawable(ev)) return false;
+  const { markers, mfe, mae } = eventOverlayMarkers(ev);
+  markersOut.push(...markers);
+  const entry = { time: ev.timestamp, price: ev.refClose };
+  if (mfe) linesArr.push(addPatLine(entry, mfe, "#26a69a"));
+  if (mae) linesArr.push(addPatLine(entry, mae, "#ef5350"));
+  return true;
+}
+// Katman 1 sinyali ateşlendiğinde: aynı coin/tf/desen için en son GEÇMİŞ (şu anki sinyalden önceki) örneği çiz.
+async function patternRenderChartOverlay(patId, idx){
+  clearPatLineSeries(patOverlay.ctxLines);
+  patOverlay.ctxMarkers = [];
+  if (!patId || !PATTERN_TFS.includes(S.interval) || !await patternPoolInit()){ redrawMarkers(); return; }
+  const curTs = (idx != null && S.candles[idx]) ? S.candles[idx].time : null;
+  const key = `${S.symbol}:${S.interval}:${patId}`;
+  const evs = (await dbIndexAll("events", "coinPatternKey", key))
+    .filter(e => e.status === "settled" && e.timestamp !== curTs)
+    .sort((a,b) => b.timestamp - a.timestamp);
+  const ev = evs[0];
+  if (ev) drawEventOverlay(ev, patOverlay.ctxLines, patOverlay.ctxMarkers);
+  redrawMarkers();
+}
+// Pattern Pool sekmesinden: seçili desenin bu coindeki tüm (yüklü aralıktaki) geçmiş örneklerini grafikte göster/kapat.
+async function togglePoolOverlay(key){
+  if (patOverlay.poolActive && patOverlay.poolKey === key){
+    patOverlay.poolActive = false; patOverlay.poolKey = null;
+    clearPatLineSeries(patOverlay.poolLines); patOverlay.poolMarkers = [];
+    redrawMarkers(); renderPoolDetail(key);
+    return;
+  }
+  if (!await patternPoolInit()) return;
+  const parts = key.split(":");
+  const tf = parts.length === 3 ? parts[1] : parts[0];
+  const patId = parts.length === 3 ? parts[2] : parts[1];
+  if (tf !== S.interval){
+    // Native alert() bazı WebView/embedded ortamlarda JS thread'i kilitleyip UI'ı donduruyor — engelleyici dialog yerine sessiz uyarı.
+    patternPoolSetStatus(`Bu desen ${tf} zaman diliminde toplanmış; grafikte görmek için üstteki ${tf} sekmesine geç.`, true);
+    return;
+  }
+  clearPatLineSeries(patOverlay.poolLines);
+  const coinKey = `${S.symbol}:${tf}:${patId}`;
+  const evs = (await dbIndexAll("events", "coinPatternKey", coinKey))
+    .filter(e => e.status === "settled")
+    .sort((a,b) => b.timestamp - a.timestamp)
+    .slice(0, 15); // grafik kalabalaşmasın diye en son 15 örnekle sınırlı
+  const markers = [];
+  evs.forEach(ev => drawEventOverlay(ev, patOverlay.poolLines, markers));
+  patOverlay.poolMarkers = markers;
+  patOverlay.poolActive = true; patOverlay.poolKey = key;
+  redrawMarkers();
+  patternPoolSetStatus(markers.length
+    ? `${S.symbol}: grafikte ${evs.length} geçmiş örnek gösteriliyor`
+    : `${S.symbol} için yüklü mum aralığında bu desenden örnek yok`, !markers.length);
+  showView("chart");
+}
+function clearAllPatOverlays(){
+  clearPatLineSeries(patOverlay.ctxLines); patOverlay.ctxMarkers = [];
+  clearPatLineSeries(patOverlay.poolLines); patOverlay.poolMarkers = [];
+  patOverlay.poolActive = false; patOverlay.poolKey = null;
+}
+/* ================= 10. COIN SEÇİMİ / FAVORİLER ================= */
+async function switchSymbol(sym){
+  patternCompleteOpenForSymbol(S.symbol).catch(()=>{});
+  S.symbol = sym;
+  S.recents = [sym, ...S.recents.filter(x => x !== sym)].slice(0, 10);
+  save(); updateFavBtn(); renderFavs();
+  engine.pending = null; engine.markers = []; engine.log = []; engine.lastRaw = null;
+  clearAllPatOverlays();
+  setStatus("NOTR", "Yeni sembol yüklendi.");
+  $("symInput").value = ""; $("symInput").placeholder = sym; $("symDrop").style.display = "none";
+  resetFlow();
+  await loadKlines();
+  if (chart && typeof chart.remove === "function") chart.remove();
+  initChart(S.symbol);
+  redrawAll(); restoreOrFitChart();
+  runEngine(); renderSignalTab();
+  wsConnect(); restartRaw(false);
+  patternBackfillSymbol(sym).catch(e => console.warn("pattern backfill hata", e));
+}
+function renderDrop(q){
+  const drop = $("symDrop");
+  const list = q
+    ? S.symbols.filter(s => s.includes(q.toUpperCase())).slice(0, 40)
+    : [...new Set([...S.favs, ...S.recents])].slice(0, 15);
+  if (!list.length){ drop.style.display = "none"; return; }
+  drop.innerHTML = list.map(s =>
+    `<div class="row" data-s="${s}"><span>${s}</span><small>${S.favs.includes(s)?"★":""} PERP</small></div>`).join("");
+  drop.style.display = "block";
+  drop.querySelectorAll(".row").forEach(r => r.onclick = () => switchSymbol(r.dataset.s));
+}
+function updateFavBtn(){
+  const on = S.favs.includes(S.symbol);
+  $("favBtn").textContent = on ? "★" : "☆";
+  $("favBtn").classList.toggle("active", on);
+}
+function renderFavs(){
+  $("favList").innerHTML = S.favs.length ? S.favs.map(s =>
+    `<div class="favRow"><span data-go="${s}" style="font-weight:600">${s}</span><button class="x" data-del="${s}">✕</button></div>`).join("")
+    : '<div style="color:var(--muted);font-size:12.5px">Favori yok. Header\'daki yıldıza bas.</div>';
+  $("recentList").innerHTML = S.recents.length ? S.recents.map(s =>
+    `<div class="favRow"><span data-go="${s}" style="font-weight:600">${s}</span></div>`).join("")
+    : '<div style="color:var(--muted);font-size:12.5px">—</div>';
+  document.querySelectorAll("[data-go]").forEach(e => e.onclick = () => { switchSymbol(e.dataset.go); showView("chart"); });
+  document.querySelectorAll("[data-del]").forEach(e => e.onclick = () => {
+    S.favs = S.favs.filter(x => x !== e.dataset.del); save(); renderFavs(); updateFavBtn();
+  });
+}
+/* ================= 11. AYARLAR / NAV / INIT ================= */
+function fmt(n){
+  n = Number(n); if (!Number.isFinite(n)) return "—";
+  if (n === 0) return "0";
+  if (n < 0.001) return n.toFixed(8);
+  if (n < 1) return n.toFixed(4);
+  if (n >= 10000) return n.toLocaleString("en-US",{maximumFractionDigits:0});
+  if (n >= 1000) return n.toLocaleString("en-US",{maximumFractionDigits:2});
+  return n.toFixed(2);
+}
+function compact(n){
+  n = Number(n); if (!Number.isFinite(n)) return "—";
+  const a = Math.abs(n), s = n < 0 ? "-" : "";
+  if (a >= 1e9) return s + (a/1e9).toFixed(2) + "B";
+  if (a >= 1e6) return s + (a/1e6).toFixed(2) + "M";
+  if (a >= 1e3) return s + (a/1e3).toFixed(1) + "K";
+  return s + a.toFixed(a >= 10 ? 0 : 2);
+}
+function signed(n,d=1){ n=Number(n); if(!Number.isFinite(n)) return "—"; return (n>0?"+":"") + n.toFixed(d); }
+function pct(v){ v=Number(v); if(!Number.isFinite(v)) return "—"; return signed(v*100,1)+"%"; }
+function fundFmt(v){ v=Number(v); if(!Number.isFinite(v)) return "—"; return signed(v*100,4)+"%"; }
+function scoreColor(score){ return score >= 75 ? "#26a69a" : score >= 60 ? "#4c8ce0" : score >= 45 ? "#e0b64c" : "#ef5350"; }
+function escapeHtml(s){ return String(s).replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c])); }
+function showView(v){
+  document.querySelectorAll(".view").forEach(e => e.classList.remove("active"));
+  $("view-" + v).classList.add("active");
+  document.querySelectorAll("#nav button").forEach(b => b.classList.toggle("active", b.dataset.view === v));
+  if (v === "pool") renderPoolView();
+}
+function applyTheme(){
+  document.documentElement.classList.toggle("light", !S.settings.dark);
+  if (chart) chart.applyOptions(themeOpts());
+}
+function bindSettings(){
+  const map = {
+    setMa1:"ma1", setMa2:"ma2", setMa3:"ma3", setSarStep:"sarStep", setSarMax:"sarMax", setN:"nWindow",
+    setLiqMin:"liqMin", setOiPoll:"oiPollSec", setCascadePct:"cascadePct", setPatternWin:"patternWinPct",
+    setWhaleMin:"whaleMin", setWallPct:"wallPct",
+    setBBPeriod:"bbPeriod", setBBStd:"bbStd", setRsiPeriod:"rsiPeriod",
+    setMacdFast:"macdFast", setMacdSlow:"macdSlow", setMacdSignal:"macdSignal"
+  };
+  for (const [id, key] of Object.entries(map)){
+    $(id).value = S.settings[key];
+    $(id).onchange = () => {
+      const nv = +$(id).value;
+      S.settings[key] = Number.isFinite(nv) ? nv : S.settings[key]; save();
+      if (key === "oiPollSec") startOiPolling();
+      if (key === "patternWinPct") patternRecomputeAllStats().catch(()=>{});
+      if (["ma1","ma2","ma3","sarStep","sarMax","nWindow"].includes(key)){ engine.pending=null; runEngineAndRedraw(); }
+      else if (["bbPeriod","bbStd","rsiPeriod","macdFast","macdSlow","macdSignal"].includes(key)) redrawAll();
+    };
+  }
+  const toggles = {
+    setDark:"dark", setShowMa:"showMa", setShowSar:"showSar", setShowVol:"showVol",
+    setRawConfirm:"rawConfirm", setShowFlow:"showFlow", setShowLiq:"showLiq",
+    setShowLadder:"showLadder", setShowHeatmap:"showHeatmap", setWhaleAlerts:"whaleAlerts",
+    setShowBB:"showBB", setShowRsi:"showRsi", setShowMacd:"showMacd", setShowVwap:"showVwap"
+  };
+  for (const [id, key] of Object.entries(toggles)){
+    $(id).checked = !!S.settings[key];
+    $(id).onchange = () => {
+      S.settings[key] = $(id).checked; save();
+      if (key === "dark") applyTheme();
+      if (["showMa","showSar","showVol","showBB","showRsi","showMacd","showVwap"].includes(key)) redrawAll();
+      if (["showVol","showRsi","showMacd"].includes(key)) applyPanelLayout();
+      if (key === "showFlow") renderFlowMini();
+      if (key === "showLiq") redrawMarkers();
+      if (key === "showHeatmap" && !$(id).checked && ctxH){ ctxH.clearRect(0,0,heatCv.width,heatCv.height); }
+      if (key === "rawConfirm") { renderDecisionRaw(null); restartRaw(false); }
+      if (key === "showLadder" || key === "showHeatmap") markOverlayDirty();
+      renderWsStatus();
+    };
+  }
+  $("reconnBtn").onclick = () => { S.wsRetry = 0; S.raw.marketRetry = 0; S.raw.publicRetry = 0; wsConnect(); restartRaw(false); };
+  const lineCtrls = [
+    {colorId:"colMa1", widthId:"widMa1", colorKey:"ma1Color", widthKey:"ma1Width"},
+    {colorId:"colMa2", widthId:"widMa2", colorKey:"ma2Color", widthKey:"ma2Width"},
+    {colorId:"colMa3", widthId:"widMa3", colorKey:"ma3Color", widthKey:"ma3Width"},
+    {colorId:"colSar", widthId:"widSar", colorKey:"sarColor", widthKey:"sarWidth"},
+    {colorId:"colBB", widthId:"widBB", colorKey:"bbColor", widthKey:"bbWidth"},
+    {colorId:"colVwap", widthId:"widVwap", colorKey:"vwapColor", widthKey:"vwapWidth"},
+    {colorId:"colRsi", widthId:"widRsi", colorKey:"rsiColor", widthKey:"rsiWidth"},
+    {colorId:"colMacd", widthId:"widMacd", colorKey:"macdColor", widthKey:"macdWidth"},
+    {colorId:"colMacdSig", widthId:"widMacdSig", colorKey:"macdSignalColor", widthKey:"macdSignalWidth"}
+  ];
+  const LINE_DEFAULTS = {
+    ma1Color:"#e0b64c", ma2Color:"#4c8ce0", ma3Color:"#b06ce0",
+    ma1Width:1, ma2Width:1, ma3Width:1,
+    sarColor:"#9aa4ae", sarWidth:1,
+    bbColor:"#4c8ce0", bbWidth:1,
+    vwapColor:"#ff9800", vwapWidth:2,
+    rsiColor:"#fdd835", rsiWidth:1,
+    macdColor:"#00bcd4", macdWidth:1,
+    macdSignalColor:"#ff7043", macdSignalWidth:1
+  };
+  function bindLineCtrls(){
+    lineCtrls.forEach(c => {
+      $(c.colorId).value = S.settings[c.colorKey];
+      $(c.widthId).value = String(S.settings[c.widthKey]);
+      $(c.colorId).oninput = () => { S.settings[c.colorKey] = $(c.colorId).value; save(); applyLineStyles(); };
+      $(c.widthId).onchange = () => { S.settings[c.widthKey] = +$(c.widthId).value; save(); applyLineStyles(); };
+    });
+  }
+  bindLineCtrls();
+  $("resetLineStyleBtn").onclick = () => {
+    Object.assign(S.settings, LINE_DEFAULTS); save(); bindLineCtrls(); applyLineStyles();
+  };
+}
+function bindUI(){
+  bindPatternPoolUI();
+  document.querySelectorAll("#nav button").forEach(b => b.onclick = () => showView(b.dataset.view));
+  const tfBar = $("tfBar");
+  tfBar.innerHTML = TFS.map(t => `<button data-tf="${t}" class="${t===S.interval?"active":""}">${t}</button>`).join("");
+  tfBar.querySelectorAll("button").forEach(b => b.onclick = async () => {
+    S.interval = b.dataset.tf; save();
+    tfBar.querySelectorAll("button").forEach(x => x.classList.toggle("active", x === b));
+    engine.pending = null; engine.markers = [];
+    clearAllPatOverlays();
+    await loadKlines(); redrawAll(); restoreOrFitChart(); runEngine(); wsConnect();
+    patternBackfillSymbol(S.symbol).catch(e => console.warn("pattern backfill hata", e));
+  });
+  const inp = $("symInput");
+  inp.oninput = () => renderDrop(inp.value.trim());
+  inp.onfocus = () => renderDrop(inp.value.trim());
+  document.addEventListener("click", e => {
+    if (!$("symDrop").contains(e.target) && e.target !== inp) $("symDrop").style.display = "none";
+  });
+  $("favBtn").onclick = () => {
+    if (S.favs.includes(S.symbol)) S.favs = S.favs.filter(x => x !== S.symbol);
+    else S.favs.unshift(S.symbol);
+    save(); updateFavBtn(); renderFavs();
+  };
+}
+(async function init(){
+  applyTheme();
+  bindUI(); bindSettings(); renderFavs(); updateFavBtn(); renderFlowMini(); renderWsStatus();
+  await patternPoolInit();
+  patternCompleteAllOpenEvents().catch(()=>{});
+  loadSymbols();                                  // arama için arka planda
+  $("symInput").placeholder = S.symbol;
+  await loadKlines();
+  initChart(S.symbol);
+  redrawAll(); restoreOrFitChart();
+  runEngine(); renderSignalTab(); patternRenderSignalContext(null);
+  wsConnect(); startRaw();
+  patternBackfillSymbol(S.symbol).catch(e => console.warn("pattern backfill hata", e));
+})();
+</script>
+<script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a1ce28667ddb49da',t:'MTc4NDM0MjgwNQ=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a1d1ae8bdeeacd0f',t:'MTc4NDM3OTc1Nw=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+</html>
