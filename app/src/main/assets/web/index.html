@@ -276,7 +276,169 @@ button.btn{background:var(--accent);border:none;color:#fff;border-radius:8px;pad
 "use strict";
 /* ================= 1. STATE & CONFIG ================= */
 const REST = "https://fapi.binance.com";
-const REST_FALLBACK = "https://api.binance.com";
+/* ================= PROXY YÖNETİCİSİ (çok katmanlı otomatik fallback) =================
+   Strateji:
+   1) Doğrudan bağlantı (fapi.binance.com) — coğrafi kısıtsız lokasyonlarda en hızlısı
+   2) Binance official mirror'lar (data-api.binance.vision vs.)
+   3) Topluluk/ücretsiz CORS proxy'leri (hız testi yapılır, en hızlı çalışan seçilir)
+   4) Opsiyonel kullanıcı tarafından ayarlanmış özel proxy (Settings'ten eklenebilir)
+   Çalışan proxy 30 dk cache'lenir; hata verirse (4xx/5xx/timeout/geo-block) listedeki
+   sıradaki aday denenir. Her 5 dakikada bir arka planda tekrar hız testi yapılır.    */
+const PROXY_STATE = {
+  restIdx: 0, wsIdxCaches: { kline:0, market:0, public:0 },
+  lastProbe: 0, probeEveryMs: 5*60*1000, healthyCacheUntil: 0,
+  inFlight: new Set(), blacklist: new Map(), // url → blockUntil
+  userProxy: null
+};
+// REST endpoint listesi (fonksiyonlar, çünkü path parametre alır)
+function buildRestUrls(path){
+  const urls = [];
+  urls.push(REST + path);
+  urls.push("https://fapi1.binance.com" + path);
+  // Binance public mirror (spot destekli ama bazı futures endpoint'leri de var)
+  urls.push("https://api.binance.com" + path.replace(/^\/fapi\//,"/api/v3/")); // klines/depth vb. spot karşılıkları (best effort)
+  // Community CORS proxies (her biri Binance'i arkadan çağırır)
+  const enc = encodeURIComponent(REST + path);
+  urls.push(`https://api.allorigins.win/raw?url=${enc}`);
+  urls.push(`https://corsproxy.io/?${enc}`);
+  urls.push(`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(REST + path)}`);
+  urls.push(`https://api.cors.lol/?url=${enc}`);
+  urls.push(`https://thingproxy.freeboard.io/fetch/${REST}${path}`);
+  urls.push(`https://cors-anywhere.onrender.com/${REST}${path}`);
+  // Kullanıcı özel proxy (en son öncelik; tam URL veya path template)
+  if (PROXY_STATE.userProxy) urls.push(PROXY_STATE.userProxy.replace("${url}", REST + path).replace("${enc}", enc));
+  return urls;
+}
+function isGeoBlock(code, text){
+  return code === 451 || code === 403 || /restricted location|geo|legal/i.test(text || "");
+}
+function isProxyError(code){
+  return code === 429 || code === 502 || code === 503 || code === 504;
+}
+async function restFetch(path){
+  const urls = buildRestUrls(path);
+  let lastErr;
+  const startIdx = PROXY_STATE.restIdx || 0;
+  for (let off = 0; off < urls.length; off++){
+    const i = (startIdx + off) % urls.length;
+    const u = urls[i];
+    const blocked = PROXY_STATE.blacklist.get(u);
+    if (blocked && blocked > Date.now()) continue;
+    PROXY_STATE.inFlight.add(u);
+    try{
+      const ctl = new AbortController();
+      const to = setTimeout(() => ctl.abort(), 12000);
+      const r = await fetch(u, { cache:"no-store", signal:ctl.signal,
+        headers:{"X-Requested-With":"FuturesScanner"} });
+      clearTimeout(to);
+      // Bazı proxy'ler HTML hata sayfası döndürür (200 OK ama content-type text/html)
+      const ct = r.headers.get("content-type") || "";
+      if (r.ok && (ct.includes("application/json") || ct.length === 0)){
+        // Çalışan proxy'yi öne al
+        PROXY_STATE.restIdx = i;
+        PROXY_STATE.healthyCacheUntil = Date.now() + 30*60*1000;
+        PROXY_STATE.inFlight.delete(u);
+        return r;
+      }
+      const body = await r.text().catch(()=>"");
+      if (isGeoBlock(r.status, body)) {
+        PROXY_STATE.blacklist.set(u, Date.now() + 30*60*1000); // 30dk blockla
+      } else if (isProxyError(r.status)) {
+        PROXY_STATE.blacklist.set(u, Date.now() + 60*1000); // 1dk
+      }
+      lastErr = new Error(`HTTP ${r.status} from ${u}`);
+    }catch(e){
+      lastErr = e;
+      if (e.name === "AbortError") PROXY_STATE.blacklist.set(u, Date.now() + 2*60*1000);
+    }
+    PROXY_STATE.inFlight.delete(u);
+  }
+  throw lastErr || new Error("Tüm REST proxy'leri başarısız");
+}
+// WebSocket endpoint listesi (tür bazında)
+function buildWsUrls(kind, streamsOrPath){
+  const urls = [];
+  const combined = (base, streams) => `${base}?streams=${streams}`;
+  if (kind === "kline"){
+    // streamsOrPath = "btcusdt@kline_5m"
+    // 1s kline market/ws üzerinde yok — bu yüzden ilk denemede combined/vision
+    if (streamsOrPath.endsWith("@kline_1s")){
+      urls.push(`wss://fstream.binance.com/stream?streams=${streamsOrPath}`);
+      urls.push(`wss://data-stream.binance.vision/stream?streams=${streamsOrPath}`);
+    } else {
+      urls.push(`wss://fstream.binance.com/market/ws/${streamsOrPath}`);
+      urls.push(`wss://fstream.binance.com/market/stream?streams=${streamsOrPath}`);
+      urls.push(`wss://fstream.binance.com/stream?streams=${streamsOrPath}`);
+      urls.push(`wss://data-stream.binance.vision/stream?streams=${streamsOrPath}`);
+    }
+    urls.push(`wss://fstream.binance.com/ws/${streamsOrPath}`);
+  } else if (kind === "market"){
+    urls.push(`wss://fstream.binance.com/market/stream?streams=${streamsOrPath}`);
+    urls.push(`wss://fstream.binance.com/stream?streams=${streamsOrPath}`);
+    urls.push(`wss://data-stream.binance.vision/stream?streams=${streamsOrPath}`);
+  } else if (kind === "public"){
+    // streamsOrPath = "btcusdt@depth@100ms"
+    urls.push(`wss://fstream.binance.com/public/ws/${streamsOrPath}`);
+    urls.push(`wss://fstream.binance.com/public/stream?streams=${streamsOrPath}`);
+    urls.push(`wss://fstream.binance.com/ws/${streamsOrPath}`);
+    urls.push(`wss://data-stream.binance.vision/stream?streams=${streamsOrPath}`);
+    urls.push(`wss://data-stream.binance.vision/ws/${streamsOrPath}`);
+  }
+  return urls;
+}
+// WS bağlantısı açar ve çalışan URL'yi bulursa success callback'ine o URL'yi verir.
+// 4 saniye mesaj gelmezse o endpoint'i başarısız say ve sıradakini dener.
+function openWsWithFallback(kind, streamsOrPath, stateKey, onOpen, onMessage, onClose, onError){
+  const urls = buildWsUrls(kind, streamsOrPath);
+  let cacheKey = kind;
+  let idx = PROXY_STATE.wsIdxCaches[cacheKey] || 0;
+  let current = null, confirmed = false, tries = 0;
+  const tryNext = () => {
+    if (confirmed) return;
+    tries++;
+    if (tries > urls.length){
+      if (onError) onError(new Error("Tüm WS endpoint'leri başarısız"));
+      return;
+    }
+    const i = (idx + tries - 1) % urls.length;
+    const url = urls[i];
+    try { if (current) { current.onopen = current.onmessage = current.onclose = current.onerror = null; current.close(); } } catch(_){}
+    const ws = new WebSocket(url);
+    current = ws;
+    let confirmedHere = false;
+    const failTimer = setTimeout(() => {
+      if (!confirmedHere) { try { ws.close(); } catch(_){} tryNext(); }
+    }, 4500);
+    ws.onopen = () => {
+      // onopen almak yetmez — ilk veri mesajını da görmeliyiz. Bazı proxy'ler bağlantı
+      // açıyor ama veri akmıyor (timeouts, CORS WS desteği yok vb.)
+    };
+    ws.onmessage = ev => {
+      clearTimeout(failTimer);
+      if (!confirmedHere){
+        confirmedHere = true; confirmed = true;
+        PROXY_STATE.wsIdxCaches[cacheKey] = i;
+        console.log(`WS[${kind}] bağlandı: ${url}`);
+        if (onOpen) onOpen(ws, url);
+      }
+      if (onMessage) onMessage(ev);
+    };
+    ws.onclose = ev => {
+      clearTimeout(failTimer);
+      if (confirmed){
+        if (onClose) onClose(ev);
+      } else {
+        tryNext();
+      }
+    };
+    ws.onerror = ev => {
+      clearTimeout(failTimer);
+      if (!confirmedHere) try { ws.close(); } catch(_){}
+    };
+  };
+  tryNext();
+  return { close: () => { confirmed = true; if (current) try{current.close();}catch(_){} } };
+}
 // Nisan 2026 migration sonrası routed endpoint'ler.
 // /market: kline (≥1m), aggTrade, markPrice, forceOrder. /public: high-frequency depth.
 // /market/ws sadece ≥1m kline'ları yayınlıyor; 1s kline artık ayrı sürekli-besleme olarak
@@ -471,54 +633,31 @@ function wsPayload(ev){
   return d && d.data ? d.data : d; // combined-stream sarmalaması gelirse aç
 }
 function wsConnect(){
-  if (S.ws){ S.ws.onclose = null; try{S.ws.close();}catch(e){} S.ws = null; }
+  if (S.ws && S.ws._handle){ try{S.ws._handle.close();}catch(e){} S.ws = null; }
   clearTimeout(S.wsTimer);
   const sym = S.symbol.toLowerCase();
-  // 1s kline /market/ws üzerinde yayınlanmıyor (Binance migration). Hızlı interval için combined stream
-  // (önce /stream root, sonra data-stream.binance.vision mirror) dene. Diğer TFlarda market/ws daha düşük gecikmeli.
-  let urls;
-  if (KLINE_FAST_INTERVALS.has(S.interval)){
-    urls = [
-      `${WS_COMBINED}?streams=${sym}@kline_${S.interval}`,
-      `${WS_VISION}?streams=${sym}@kline_${S.interval}`
-    ];
-  } else {
-    urls = [
-      `${WS_MARKET_DIRECT}/${sym}@kline_${S.interval}`,
-      `${WS_MARKET_STREAM}?streams=${sym}@kline_${S.interval}`,
-      `${WS_COMBINED}?streams=${sym}@kline_${S.interval}`,
-      `${WS_VISION}?streams=${sym}@kline_${S.interval}`
-    ];
-  }
-  let urlIdx = S.klineUrlIdx || 0;
-  const tryUrl = () => {
-    const url = urls[urlIdx % urls.length];
-    const ws = new WebSocket(url);
-    S.ws = ws;
-    ws.__urlIdx = urlIdx;
-    ws.onopen = () => {
+  const path = `${sym}@kline_${S.interval}`;
+  const handle = openWsWithFallback("kline", path, "kline",
+    (ws, url) => {
+      S.ws = ws; ws._handle = handle;
       const hadRetry = S.wsRetry > 0;
-      S.wsRetry = 0; S.klineUrlIdx = urlIdx; S.wsAlive = true; S.wsLastMsg = Date.now(); renderWsStatus();
+      S.wsRetry = 0; S.wsAlive = true; S.wsLastMsg = Date.now(); renderWsStatus();
       console.log("kline WS açıldı:", url);
       if (hadRetry){
         loadKlines().then(() => { redrawAll(); runEngine(); patternBackfillSymbol(S.symbol).catch(()=>{}); }).catch(()=>{});
       }
-    };
-    ws.onmessage = ev => {
+    },
+    (ev) => {
       S.wsLastMsg = Date.now();
       const d = wsPayload(ev); if (!d || d.e !== "kline") return;
       onKline(d.k);
-    };
-    ws.onclose = () => {
-      if (S.ws !== ws) return;
-      S.wsAlive = false;
-      if (ws.__urlIdx === urlIdx) urlIdx++;
-      renderWsStatus();
-      scheduleKlineReconnect();
-    };
-    ws.onerror = () => { try{ws.close();}catch(e){} };
-  };
-  tryUrl();
+    },
+    () => {
+      S.wsAlive = false; renderWsStatus(); scheduleKlineReconnect();
+    },
+    () => { S.wsAlive = false; renderWsStatus(); scheduleKlineReconnect(); }
+  );
+  S.ws = null; // placeholder; set on first open
 }
 function scheduleKlineReconnect(){
   const delay = Math.min(30000, 1000 * Math.pow(2, S.wsRetry++));
@@ -534,8 +673,8 @@ function startRaw(){
 }
 function stopRaw(){
   clearTimeout(S.raw.marketTimer); clearTimeout(S.raw.publicTimer); clearInterval(S.raw.oiTimer);
-  if (S.raw.marketWs){ S.raw.marketWs.onclose = null; try{S.raw.marketWs.close();}catch(e){} S.raw.marketWs = null; }
-  if (S.raw.publicWs){ S.raw.publicWs.onclose = null; try{S.raw.publicWs.close();}catch(e){} S.raw.publicWs = null; }
+  if (S.raw.marketWs && S.raw.marketWs._handle){ try{S.raw.marketWs._handle.close();}catch(e){} S.raw.marketWs=null; }
+  if (S.raw.publicWs && S.raw.publicWs._handle){ try{S.raw.publicWs._handle.close();}catch(e){} S.raw.publicWs=null; }
   stopDepthWs();
   S.raw.marketAlive = false; S.raw.publicAlive = false;
   renderWsStatus(); queueFlowRender();
@@ -547,87 +686,66 @@ function restartRaw(reset=true){
 }
 function connectMarketRaw(){
   if (!S.settings.rawConfirm) return;
-  if (S.raw.marketWs){ S.raw.marketWs.onclose = null; try{S.raw.marketWs.close();}catch(e){} S.raw.marketWs = null; }
+  if (S.raw.marketWs && S.raw.marketWs._handle){ try{S.raw.marketWs._handle.close();}catch(e){} S.raw.marketWs=null; }
   clearTimeout(S.raw.marketTimer);
   const sym = S.symbol.toLowerCase();
   const streams = [`${sym}@aggTrade`, `${sym}@markPrice@1s`, `${sym}@forceOrder`].join("/");
-  const urls = [
-    `${WS_MARKET_STREAM}?streams=${streams}`,
-    `${WS_COMBINED}?streams=${streams}`,
-    `${WS_VISION}?streams=${streams}`
-  ];
-  let urlIdx = S.raw.marketUrlIdx || 0;
-  const tryUrl = () => {
-    const url = urls[urlIdx % urls.length];
-    const ws = new WebSocket(url);
-    S.raw.marketWs = ws; ws.__urlIdx = urlIdx;
-    ws.onopen = () => {
-      S.raw.marketRetry = 0; S.raw.marketUrlIdx = urlIdx;
-      S.raw.marketAlive = true; S.raw.marketLastMsg = Date.now();
+  const handle = openWsWithFallback("market", streams, "market",
+    (ws, url) => {
+      S.raw.marketWs = ws; ws._handle = handle;
+      S.raw.marketRetry = 0; S.raw.marketAlive = true; S.raw.marketLastMsg = Date.now();
       console.log("market WS açıldı:", url);
       renderWsStatus();
-    };
-    ws.onmessage = ev => {
+    },
+    (ev) => {
       S.raw.marketLastMsg = Date.now();
       const d = wsPayload(ev); if (!d) return;
       if (d.s && d.s !== S.symbol) return;
       if (d.e === "aggTrade") onAggTrade(d);
       else if (d.e === "markPriceUpdate") onMarkPrice(d);
       else if (d.e === "forceOrder") onForceOrder(d);
-    };
-    ws.onclose = () => {
-      if (S.raw.marketWs !== ws) return;
-      S.raw.marketAlive = false;
-      if (ws.__urlIdx === urlIdx) urlIdx++;
-      renderWsStatus(); scheduleRawReconnect("market");
-    };
-    ws.onerror = () => { try{ws.close();}catch(e){} };
-  };
-  tryUrl();
+    },
+    () => {
+      S.raw.marketAlive = false; renderWsStatus(); scheduleRawReconnect("market");
+    },
+    () => {
+      S.raw.marketAlive = false; renderWsStatus(); scheduleRawReconnect("market");
+    }
+  );
 }
 function connectPublicRaw(){
   if (!S.settings.rawConfirm) return;
-  // full depth: connect diff stream + fetch REST snapshot
   const gen = ++flow.depthGen;
-  if (flow.depthWs){ flow.depthWs.onclose = null; try{flow.depthWs.close();}catch(e){} flow.depthWs = null; }
+  if (S.raw.publicWs && S.raw.publicWs._handle){ try{S.raw.publicWs._handle.close();}catch(e){} S.raw.publicWs=null; }
   clearTimeout(S.raw.publicTimer);
   const sym = S.symbol.toLowerCase();
-  const urls = [
-    `${WS_PUBLIC_DIRECT}/${sym}@depth@100ms`,
-    `${WS_PUBLIC_STREAM}?streams=${sym}@depth@100ms`,
-    `wss://fstream.binance.com/ws/${sym}@depth@100ms`,
-    `${WS_VISION}?streams=${sym}@depth@100ms`
-  ];
-  let urlIdx = S.raw.publicUrlIdx || 0;
-  const tryUrl = () => {
-    const url = urls[urlIdx % urls.length];
-    const ws = new WebSocket(url);
-    flow.depthWs = ws; S.raw.publicWs = ws; ws.__urlIdx = urlIdx;
-    ws.onopen = () => {
-      S.raw.publicRetry = 0; S.raw.publicUrlIdx = urlIdx;
-      S.raw.publicAlive = true; S.raw.publicLastMsg = Date.now();
+  const path = `${sym}@depth@100ms`;
+  const handle = openWsWithFallback("public", path, "public",
+    (ws, url) => {
+      flow.depthWs = ws; S.raw.publicWs = ws; ws._handle = handle;
+      S.raw.publicRetry = 0; S.raw.publicAlive = true; S.raw.publicLastMsg = Date.now();
       console.log("public WS açıldı:", url);
       renderWsStatus();
-    };
-    ws.onmessage = ev => {
+    },
+    (ev) => {
       S.raw.publicLastMsg = Date.now();
       let d; try{ d = JSON.parse(ev.data); }catch(e){ return; }
       if (d.data) d = d.data;
       if (!d) return;
       if (!flow.depthSynced){ flow.depthBuffer.push(d); if (flow.depthBuffer.length > 3000) flow.depthBuffer.shift(); return; }
       applyDepthUpdate(d);
-    };
-    ws.onclose = () => {
-      if (flow.depthWs !== ws) return;
-      S.raw.publicAlive = false;
-      if (ws.__urlIdx === urlIdx) urlIdx++;
-      renderWsStatus();
+    },
+    () => {
+      S.raw.publicAlive = false; renderWsStatus();
       flow.depthReady = false; flow.depthSynced = false;
       scheduleRawReconnect("public");
-    };
-    ws.onerror = () => { try{ws.close();}catch(e){} };
-  };
-  tryUrl();
+    },
+    () => {
+      S.raw.publicAlive = false; renderWsStatus();
+      flow.depthReady = false; flow.depthSynced = false;
+      scheduleRawReconnect("public");
+    }
+  );
   // fetch snapshot & sync
   fetchDepthSnapshot(gen).catch(err => {
     console.warn('depth snapshot failed', err);
