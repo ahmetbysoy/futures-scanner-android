@@ -336,7 +336,7 @@ async function restFetch(path){
     PROXY_STATE.inFlight.add(u);
     try{
       const ctl = new AbortController();
-      const to = setTimeout(() => ctl.abort(), 12000);
+      const to = setTimeout(() => ctl.abort(), 6000);
       const r = await fetch(u, { cache:"no-store", signal:ctl.signal,
         headers:{"X-Requested-With":"FuturesScanner"} });
       clearTimeout(to);
@@ -1970,14 +1970,14 @@ function applyPanelLayout(){
   };
   const totalReserved = heights.rsi + heights.macd + heights.vol;
   const candleBottom = totalReserved > 0 ? totalReserved : 0.08;
-  chart.priceScale("right").applyOptions({ scaleMargins:{ top: topPad, bottom: candleBottom } });
+  try { chart.priceScale("right").applyOptions({ scaleMargins:{ top: topPad, bottom: Math.max(0, Math.min(1, candleBottom)) } }); } catch(e){ console.warn("layout right err",e); }
   let cursor = 1 - candleBottom;
   ["rsi","macd","vol"].forEach(key => {
     const h = heights[key];
     if (h <= 0) return;
-    const top = cursor;
-    const bottom = 1 - (cursor + h);
-    chart.priceScale(key).applyOptions({ scaleMargins:{ top, bottom } });
+    const top = Math.max(0, Math.min(1, cursor));
+    const bottom = Math.max(0, Math.min(1, 1 - (cursor + h)));
+    try { chart.priceScale(key).applyOptions({ scaleMargins:{ top, bottom } }); } catch(e){ console.warn("layout",key,"err",e); }
     cursor += h;
   });
 }
@@ -2844,27 +2844,23 @@ function bindUI(){
   };
 }
 (async function init(){
-  applyTheme();
-  bindUI(); bindSettings(); renderFavs(); updateFavBtn(); renderFlowMini(); renderWsStatus();
-  await patternPoolInit();
-  patternCompleteAllOpenEvents().catch(()=>{});
-  loadSymbols();                                  // arka planda
+  window.__initStarted = Date.now();
+  try { applyTheme(); } catch(e){ console.warn('applyTheme hata', e); }
+  try { bindUI(); bindSettings(); renderFavs(); updateFavBtn(); renderFlowMini(); renderWsStatus(); } catch(e){ console.warn('bind hata',e); }
+  try { await patternPoolInit(); } catch(e){ console.warn('patternPoolInit hata',e); }
+  loadSymbols().catch(e=>console.warn('exchangeInfo yüklenemedi (fallback liste kullanılıyor):', e.message));
   $("symInput").placeholder = S.symbol;
   try {
     await loadKlines();
   } catch(e) {
-    console.warn("loadKlines ilk denemede başarısız, reconnect ile tekrar denenecek:", e);
+    console.warn("Kline geçmişi ilk denemede alınamadı, WS bağlantısı sonrası tekrar denenecek:", e.message);
     S.candles = [];
   }
-  initChart(S.symbol);
-  redrawAll(); restoreOrFitChart();
-  runEngine(); renderSignalTab(); patternRenderSignalContext(null);
-  wsConnect(); startRaw();
-  setTimeout(async () => {
-    if (!S.candles || !S.candles.length) {
-      try { await loadKlines(); redrawAll(); restoreOrFitChart(); runEngine(); } catch(_){}
-    }
-  }, 6000);
+  try { initChart(S.symbol); } catch(e){ console.warn('initChart hata',e); }
+  try { redrawAll(); restoreOrFitChart(); runEngine(); renderSignalTab(); patternRenderSignalContext(null); } catch(e){ console.warn('redraw/engine hata',e); }
+  try { wsConnect(); startRaw(); } catch(e){ console.warn('wsConnect/startRaw hata',e); }
+  // Arka plan işleri (kritik değil — bloklama)
+  patternCompleteAllOpenEvents().catch(e=>console.warn('patternComplete hata',e));
   patternBackfillSymbol(S.symbol).catch(e => console.warn("pattern backfill hata", e));
 })();
 </script>
