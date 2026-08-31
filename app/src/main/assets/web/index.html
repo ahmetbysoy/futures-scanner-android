@@ -390,13 +390,16 @@ function buildWsUrls(kind, streamsOrPath){
     // market: aggTrade + markPrice + forceOrder combined
     urls.push(`wss://fstream.binance.com/market/stream?streams=${streamsOrPath}`);
   } else if (kind === "public"){
-    // public (depth): high-frequency yönlendirilmiş endpoint. Bazı İSS'ler
-    // /public/ws ve /public/stream'i kısıtlayabildiği için sırayla tüm alternatifleri
-    // deniyoruz. İlk gerçek veri mesajını alan kazanır.
-    urls.push(`wss://fstream.binance.com/public/ws/${streamsOrPath}`);
-    urls.push(`wss://fstream.binance.com/public/stream?streams=${streamsOrPath}`);
-    urls.push(`wss://fstream.binance.com/ws/${streamsOrPath}`);
-    urls.push(`wss://fstream.binance.com/stream?streams=${streamsOrPath}`);
+    // Depth için @depth20@100ms (partial book) kullanıyoruz — bu stream her 100ms'de
+    // tam 20 kademe gönderir, snapshot + diff sync (lastUpdateId/U/u) gerektirmez.
+    // Referans: b=alışlar, a=satışlar array'i direkt gelir.
+    // Önce klasik combined (/stream) denenir (en güvenilir rota), sonra tekil.
+    const sym = streamsOrPath.split("@")[0];
+    urls.push(`wss://fstream.binance.com/stream?streams=${sym}@depth20@100ms`);
+    urls.push(`wss://fstream.binance.com/ws/${sym}@depth20@100ms`);
+    // Fallback olarak eski diff stream (sync gerektirir, sadece diğeri çalışmazsa)
+    urls.push(`wss://fstream.binance.com/ws/${sym}@depth@100ms`);
+    urls.push(`wss://fstream.binance.com/stream?streams=${sym}@depth@100ms`);
   }
   return urls;
 }
@@ -474,6 +477,7 @@ const S = {
   interval: localStorage.getItem("fs_interval") || "5m",
   candles: [],                 // {time,open,high,low,close,volume} — time: saniye
   symbols: [],                 // futures perpetual sembol listesi
+  ticker24h: null,             // @ticker'dan gelen 24h istatistikleri
   settings: Object.assign({
     ma1:9, ma2:21, ma3:50, sarStep:0.02, sarMax:0.2, nWindow:3,
     dark:true, showMa:true, showSar:true, showVol:true,
@@ -514,7 +518,7 @@ const flow = {
   heatmapFrames:[], lastHeatSample:0,
   wallAges:new Map(), wallCount:{bid:0,ask:0},
   events:[], eventMarkers:[], lastWhale:0, lastSweep:0, lastAbsorb:0, lastBurst:0,
-  depthReady:false, depthSynced:false, depthLastUpdate:0, depthBuffer:[],
+  depthReady:false, depthSynced:false, depthLastUpdate:0, depthBuffer:[], pollTimer:null,
   depthWs:null, depthGen:0, depthRetry:0, depthTimer:null
 };
 const $ = id => document.getElementById(id);
@@ -676,6 +680,7 @@ function stopRaw(){
   clearTimeout(S.raw.marketTimer); clearTimeout(S.raw.publicTimer); clearInterval(S.raw.oiTimer);
   if (S.raw.marketWs && S.raw.marketWs._handle){ try{S.raw.marketWs._handle.close();}catch(e){} S.raw.marketWs=null; }
   if (S.raw.publicWs && S.raw.publicWs._handle){ try{S.raw.publicWs._handle.close();}catch(e){} S.raw.publicWs=null; }
+  stopDepthPolling();
   stopDepthWs();
   S.raw.marketAlive = false; S.raw.publicAlive = false;
   renderWsStatus(); queueFlowRender();
@@ -690,7 +695,7 @@ function connectMarketRaw(){
   if (S.raw.marketWs && S.raw.marketWs._handle){ try{S.raw.marketWs._handle.close();}catch(e){} S.raw.marketWs=null; }
   clearTimeout(S.raw.marketTimer);
   const sym = S.symbol.toLowerCase();
-  const streams = [`${sym}@aggTrade`, `${sym}@markPrice@1s`, `${sym}@forceOrder`].join("/");
+  const streams = [`${sym}@trade`, `${sym}@aggTrade`, `${sym}@ticker`, `${sym}@markPrice@1s`, `${sym}@forceOrder`].join("/");
   const handle = openWsWithFallback("market", streams, "market",
     (ws, url) => {
       S.raw.marketWs = ws; ws._handle = handle;
@@ -702,7 +707,8 @@ function connectMarketRaw(){
       S.raw.marketLastMsg = Date.now();
       const d = wsPayload(ev); if (!d) return;
       if (d.s && d.s !== S.symbol) return;
-      if (d.e === "aggTrade") onAggTrade(d);
+      if (d.e === "aggTrade" || d.e === "trade") onAggTrade(d);
+      else if (d.e === "24hrTicker" || d.e === "ticker") onTicker(d);
       else if (d.e === "markPriceUpdate") onMarkPrice(d);
       else if (d.e === "forceOrder") onForceOrder(d);
     },
@@ -720,55 +726,41 @@ function connectPublicRaw(){
   if (S.raw.publicWs && S.raw.publicWs._handle){ try{S.raw.publicWs._handle.close();}catch(e){} S.raw.publicWs=null; }
   clearTimeout(S.raw.publicTimer);
   const sym = S.symbol.toLowerCase();
-  const path = `${sym}@depth@100ms`;
+  // @depth20@100ms: partial book stream (her 100ms'de tam 20 kademe), diff sync GEREKTİRMEZ
+  const path = `${sym}@depth20@100ms`;
   const handle = openWsWithFallback("public", path, "public",
     (ws, url) => {
       flow.depthWs = ws; S.raw.publicWs = ws; ws._handle = handle;
       S.raw.publicRetry = 0; S.raw.publicAlive = true; S.raw.publicLastMsg = Date.now();
       console.log("public WS açıldı:", url);
       renderWsStatus();
+      // Açılır açılmaz bir REST snapshot çek (WS'nin ilk mesajını beklemeden)
+      fetchDepthSnapshot(gen).catch(()=>{});
     },
     (ev) => {
       S.raw.publicLastMsg = Date.now();
       let d; try{ d = JSON.parse(ev.data); }catch(e){ return; }
       if (d.data) d = d.data;
       if (!d) return;
-      if (!flow.depthSynced){ flow.depthBuffer.push(d); if (flow.depthBuffer.length > 3000) flow.depthBuffer.shift(); return; }
-      applyDepthUpdate(d);
+      applyDepthMessage(d);
     },
     () => {
       S.raw.publicAlive = false; renderWsStatus();
-      flow.depthReady = false; flow.depthSynced = false;
+      flow.depthReady = false;
       scheduleRawReconnect("public");
     },
     () => {
       S.raw.publicAlive = false; renderWsStatus();
-      flow.depthReady = false; flow.depthSynced = false;
+      flow.depthReady = false;
       scheduleRawReconnect("public");
     }
   );
-  // fetch snapshot & sync (WS'nin kapanmasını bekleme — snapshot ayrı retry)
-  fetchDepthSnapshot(gen).catch(err => {
-    console.warn('depth snapshot alınamadı (tekrar deneniyor):', err.message);
-    if (gen === flow.depthGen) scheduleSnapshotRetry();
-  });
+  // Polling yedeği: WS 3.5 saniyeden fazla sessiz kalırsa 2 saniyede bir REST'ten çek
+  ensureDepthPolling();
 }
 function scheduleSnapshotRetry(){
-  // Snapshot REST isteği başarısız olursa sadece snapshot'ı tekrar dene — WS'yi kapatma.
-  // WS açık kaldığı için bu arada gelen derinlik diff'leri buffer'da birikir; snapshot
-  // gelir gelmez hepsi uygulanır ve orderbook görünür.
-  const gen = flow.depthGen;
-  const delay = Math.min(15000, 2000 + 2000 * (S.raw.publicRetry++));
-  clearTimeout(S.raw.publicTimer);
-  flow.depthTimer = setTimeout(() => {
-    if (gen !== flow.depthGen || flow.depthSynced) return;
-    if (!S.raw.publicAlive) { scheduleRawReconnect("public"); return; }
-    fetchDepthSnapshot(gen).catch(err => {
-      console.warn('depth snapshot tekrar denemesi başarısız:', err.message);
-      if (gen === flow.depthGen && !flow.depthSynced) scheduleSnapshotRetry();
-    });
-  }, delay);
-  renderWsStatus(`Depth ${Math.round(delay/1000)}sn içinde`);
+  // Eski snapshot retry — polling zaten 2sn'de bir çalışıyor, bu fonksiyon boş.
+  ensureDepthPolling();
 }
 function scheduleDepthReconnect(){
   const delay = Math.min(30000, 1000 * Math.pow(2, S.raw.publicRetry++));
@@ -776,86 +768,97 @@ function scheduleDepthReconnect(){
   flow.depthTimer = setTimeout(connectPublicRaw, delay);
   renderWsStatus(`Depth ${Math.round(delay/1000)}sn sonra`);
 }
-async function fetchDepthSnapshot(gen){
-  const r = await restFetch(`/fapi/v1/depth?symbol=${S.symbol}&limit=1000`);
-  if (!r.ok) throw new Error('depth snapshot HTTP ' + r.status);
-  const snap = await r.json();
-  if (gen !== flow.depthGen || !flow.depthWs) return;
-  if (!snap || !Array.isArray(snap.bids) || !Array.isArray(snap.asks)) {
-    console.warn('depth snapshot geçersiz cevap:', snap);
-    throw new Error('depth snapshot cevabı geçersiz (geo-block veya hata)');
-  }
-  flow.bidsBook = new Map(); flow.asksBook = new Map();
-  (snap.bids||[]).forEach(([p,q]) => { const P=+p,Q=+q; if (Q>0) flow.bidsBook.set(P,Q); });
-  (snap.asks||[]).forEach(([p,q]) => { const P=+p,Q=+q; if (Q>0) flow.asksBook.set(P,Q); });
-  flow.depthLastUpdate = +snap.lastUpdateId || 0;
-  // apply buffered diffs with U <= lastUpdateId+1 and u >= lastUpdateId
-  const relevant = [];
-  for (const m of flow.depthBuffer){
-    const U = +m.U, u = +m.u;
-    if (!Number.isFinite(U) || !Number.isFinite(u)) continue;
-    if (u < flow.depthLastUpdate + 1) continue;   // already in snapshot
-    if (U > flow.depthLastUpdate + 1) {           // gap
-      flow.depthBuffer = [];
-      return fetchDepthSnapshot(gen);
-    }
-    relevant.push(m);
-  }
-  relevant.forEach(m => applyDepthUpdate(m, true));
-  flow.depthBuffer = [];
-  flow.depthSynced = true; flow.depthReady = true;
-  showSyncBadge(false);
-  recomputeBest();
-  computeObi();
-  heatmapSample(true);
-  markOverlayDirty(); flowDirty = true;
-}
-function applyDepthUpdate(m, fromSync){
-  const finalId = +m.u;
-  if (!fromSync && finalId <= flow.depthLastUpdate) return;
+// Depth verisini (hem @depth20 partial book hem @depth diff hem REST snapshot) book'a uygula.
+// Referans Pastel proje yaklaşımı: @depth20 stream'i her 100ms'de tam en iyi 20 kademe
+// gönderir (pre-snapshot'lu, lastUpdateId/U/u senkronu gerektirmez). WS @depth diff veya
+// REST /depth?limit=20 formatı da (b/a dizileri) aynı şekilde işlenir.
+function applyDepthMessage(d){
+  const bids = d.b || d.bids;
+  const asks = d.a || d.asks;
+  if (!bids || !asks) return;
   const now = Date.now();
-  // track level ages for spoof detection on levels near top-of-book
-  const nearBB = flow.bestBid, nearBA = flow.bestAsk;
-  const nearRange = flow.bestAsk * 0.003;
-  const upd = (book, arr, side) => {
-    for (const x of (arr||[])){
+  flow.lastDepthTs = now;
+  // @depth20 mesajında en iyi 20 kademe TAM olarak gelir — book'u tamamen o 20 kademeyle
+  // değiştir (kademe sayısı limit=20 civarındaysa tam rebuild yap). REST limit=20 da aynı.
+  // Eski/derin duvarları da kısmen koruyabilmek için sadece 20+ kademedeki seviyeleri sıfırla.
+  const seenBid = new Set(), seenAsk = new Set();
+  const upd = (book, seen, arr, side) => {
+    for (const x of arr){
       const P = +x[0], Q = +x[1];
-      const oldQ = book.get(P) || 0;
-      const oldNotional = P * oldQ;
-      const whaleMin = whaleThresholdNotional();
-      if (Q === 0){
-        if (oldQ > 0){
-          // spoof detection: big wall vanished quickly near top
-          if (oldNotional >= whaleMin){
-            const k = wallKey(P, side);
-            const born = flow.wallAges.get(k)?.born || now;
-            const age = now - born;
-            if (age < SPOOF_MAX_AGE && nearBB && nearBA && Math.abs(P - (side==='B'?nearBB:nearBA))/nearBA < 0.003){
-              addFlowEvent('SPOOF?', 'medium', `Spoof silindi ${side==='B'?'BİD':'ASK'} ${compact(oldNotional)} @ ${fmtPrice(P)} (${(age/1000).toFixed(1)}s)`);
-            }
-          }
-          book.delete(P);
-          flow.wallAges.delete(wallKey(P, side));
-        }
-      } else {
-        book.set(P, Q);
-        const k = wallKey(P, side);
-        if (!flow.wallAges.has(k)) flow.wallAges.set(k, {born:now, peak:oldNotional});
-        const rec = flow.wallAges.get(k);
-        rec.peak = Math.max(rec.peak||0, P*Q);
-      }
+      if (!Number.isFinite(P) || !Number.isFinite(Q)) continue;
+      seen.add(P);
+      if (Q > 0) book.set(P, Q);
+      else book.delete(P);
     }
   };
-  upd(flow.bidsBook, m.b, 'B');
-  upd(flow.asksBook, m.a, 'A');
-  flow.depthLastUpdate = finalId;
-  flow.lastDepthTs = now;
+  // @depth20/depth snapshot tam book verdiği için eskimiş en iyi kademeleri temizle
+  // (görünmeyen seviyeleri sil). Diff mesajlarda sadece güncellenen seviyeler gelir,
+  // bu yüzden orada da güvenli: görünmeyen zaten silinmez.
+  upd(flow.bidsBook, seenBid, bids, 'B');
+  upd(flow.asksBook, seenAsk, asks, 'A');
+  // Temsil edilen aralıkta eski (görünmeyen) seviyeleri temizle
+  if (seenBid.size <= 50) { // partial/snapshot mesajı
+    // Görünen en iyi seviyelerle aynı banttaki eski seviyeleri temizle
+    const sortedBids = [...seenBid].sort((a,b)=>b-a);
+    const sortedAsks = [...seenAsk].sort((a,b)=>a-b);
+    if (sortedBids.length) {
+      const bidLo = sortedBids[sortedBids.length-1];
+      for (const p of [...flow.bidsBook.keys()]) if (p >= bidLo && !seenBid.has(p)) flow.bidsBook.delete(p);
+    }
+    if (sortedAsks.length) {
+      const askHi = sortedAsks[sortedAsks.length-1];
+      for (const p of [...flow.asksBook.keys()]) if (p <= askHi && !seenAsk.has(p)) flow.asksBook.delete(p);
+    }
+  }
+  flow.depthReady = true; flow.depthSynced = true;
+  flow.depthLastUpdate = +d.u || +d.lastUpdateId || now;
   recomputeBest();
   computeObi();
-  heatmapSample();
   detectWalls();
-  flowDirty = true;
-  markOverlayDirty();
+  heatmapSample();
+  markOverlayDirty(); flowDirty = true;
+  renderWsStatus();
+}
+
+async function fetchDepthSnapshot(gen){
+  // Hızlı açılış için limit=20 ilk REST snapshot (WS gelene kadar)
+  let r;
+  try {
+    r = await restFetch(`/fapi/v1/depth?symbol=${S.symbol}&limit=20`);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const snap = await r.json();
+    if (gen !== flow.depthGen) return;
+    if (!snap || !Array.isArray(snap.bids) || !Array.isArray(snap.asks)) return;
+    applyDepthMessage(snap);
+  } catch(e) {
+    console.warn('depth REST (limit=20) hata:', e.message);
+    throw e;
+  }
+}
+
+// WS sessiz kalırsa 2sn'de bir REST'ten depth çek (referans Pastel yaklaşımı)
+function ensureDepthPolling(){
+  clearInterval(flow.pollTimer);
+  flow.pollTimer = setInterval(async () => {
+    if (Date.now() - S.raw.publicLastMsg < 3500) return; // WS canlı, polling'e gerek yok
+    try {
+      const r = await restFetch(`/fapi/v1/depth?symbol=${S.symbol}&limit=20`);
+      if (!r.ok) return;
+      const snap = await r.json();
+      if (!snap || !snap.bids) return;
+      applyDepthMessage(snap);
+    } catch(_){}
+  }, 2000);
+}
+function stopDepthPolling(){
+  clearInterval(flow.pollTimer);
+  flow.pollTimer = null;
+}
+
+function applyDepthUpdate(m, fromSync){
+  // Eski diff-stream güncellemesi — @depth20'de kullanılmıyor ama herhangi bir sebeple
+  // diff stream düşerse geriye dönük uyumluluk için bırakıyoruz.
+  applyDepthMessage(m);
 }
 function recomputeBest(){
   let bb = 0, ba = Infinity;
@@ -1001,6 +1004,16 @@ function pruneFlow(){
   if (flow.trades.length > 8000) flow.trades.splice(0, flow.trades.length - 8000);
   if (flow.liqs.length > 500) flow.liqs.splice(0, flow.liqs.length - 500);
 }
+function onTicker(d){
+  // 24hrTicker: referans Pastel'de header high/low/volume/change için kullanılıyor.
+  S.ticker24h = {
+    lastPrice: +d.c,
+    changePct: +d.P,
+    high: +d.h,
+    low: +d.l,
+    quoteVolume: +d.q
+  };
+}
 function onAggTrade(d){
   const ts = +d.T || +d.E || Date.now();
   const price = +d.p, qty = +d.q;
@@ -1019,7 +1032,7 @@ function onAggTrade(d){
       flow.lastWhale = ts;
       const side = isSell ? 'SELL' : 'BUY';
       addFlowEvent('WHALE', notional >= wmin*2 ? 'high' : 'medium',
-        `Whale ${side} ${compact(notional)} @ ${fmtPrice(price)}`, isSell?'sell':'buy');
+        `Whale ${side} ${compact(notional)} @ ${fmt(price)}`, isSell?'sell':'buy');
       addWhaleMarker(price, isSell?'aboveBar':'belowBar', isSell?'var(--down)':'var(--up', `WHALE ${side} ${compact(notional)}`);
     }
     // Sweep: 1.8s window, >=4 trades same side, total >= wmin*1.8
@@ -2086,7 +2099,7 @@ function renderFlowMini(){
   setVal("rawOiVal", flow.oi==null ? "—" : `${compact(flow.oi)} (${signed(flow.oiChangePct,2)}%)`, flow.oiChangePct);
   setVal("rawFundVal", fundFmt(flow.funding), flow.funding);
   setVal("rawLiqVal", `L:${compact(snap.longLiq60)} / S:${compact(snap.shortLiq60)}`, snap.shortLiq60 - snap.longLiq60);
-  $("rawSpreadVal").textContent = flow.spread ? fmtPrice(flow.spread) : "—";
+  $("rawSpreadVal").textContent = flow.spread ? fmt(flow.spread) : "—";
   $("rawWallsVal").textContent = `${flow.wallCount.bid}/${flow.wallCount.ask}`;
   $("rawModeVal").textContent = (S.settings.rawConfirm && flow.depthReady) ? "Açık" : "Bağlanıyor";
   showSyncBadge(flow.depthReady && !flow.depthSynced);
