@@ -20,7 +20,7 @@ import java.util.concurrent.TimeUnit
  *  - Kullanıcı hangi ağdaysa (VPN vs.) gerçek kullanıcı ağı kullanılır
  *
  * Strateji:
- *  - Hedef URL Binance (/fapi/*, /api/v3/*) ise doğrudan OkHttp'tan Binance'e istek at
+ *  - Hedef URL Binance (path /fapi/ veya /api/v3/ ile başlıyorsa) ise doğrudan OkHttp'tan Binance'e istek at
  *  - URL bilinen bir CORS proxy'si ise (url parametresi Binance'e işaret ediyorsa),
  *    önce hedef Binance URL'sini doğrudan dene (VPN varsa geçer); 451/403 alırsan
  *    proxy URL'yi OkHttp'tan çağır
@@ -39,8 +39,8 @@ object BinanceProxy {
             .build()
     }
 
-    // Futures REST host'ları. DİKKAT: data-api.binance.vision SPOT aynasıdır (/api/v3),
-    // futures (/fapi/*) 404 döndürür; listede YOK.
+    // Futures REST host'ları. DİKKAT: data-api.binance.vision SPOT aynasıdır,
+    // futures (path /fapi/ ile başlayanlar) 404 döndürür; listede YOK.
     private val BINANCE_HOSTS = setOf(
         "fapi.binance.com",
         "fapi1.binance.com", "fapi2.binance.com", "fapi3.binance.com", "fapi4.binance.com",
